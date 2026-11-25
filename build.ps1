@@ -46,9 +46,14 @@ if ($Install) {
     New-Item -ItemType Directory -Force -Path $appDir | Out-Null
     # stop the running copies (the background notifier, then the window)
     try { Invoke-WebRequest -UseBasicParsing -Method Post -Headers @{ 'X-HHub' = '1' } -Uri 'http://127.0.0.1:18788/quit' -TimeoutSec 5 | Out-Null } catch {}
-    Get-Process hhub, HouseholdHub -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Milliseconds 800
-    foreach ($f in 'hhub.exe', 'HouseholdHub.exe', 'icon.ico', 'icon.png') { Copy-Item (Join-Path $here $f) $appDir -Force }
+    # Windows can keep an exe locked for a moment after its process ends: retry a few times
+    foreach ($f in 'hhub.exe', 'HouseholdHub.exe', 'icon.ico', 'icon.png') {
+        for ($try = 1; $try -le 10; $try++) {
+            Get-Process hhub, HouseholdHub -ErrorAction SilentlyContinue | Stop-Process -Force
+            try { Copy-Item (Join-Path $here $f) $appDir -Force -ErrorAction Stop; break }
+            catch { if ($try -eq 10) { throw } ; Start-Sleep -Milliseconds 700 }
+        }
+    }
     $sh = New-Object -ComObject WScript.Shell
     foreach ($dir in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop'))) {
         $lnk = $sh.CreateShortcut((Join-Path $dir 'Household Hub.lnk'))
