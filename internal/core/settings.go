@@ -29,6 +29,7 @@ var SettingKeys = map[string]string{
 	"backup_keep":              "30",
 	"last_backup":              "",
 	"forecast_default_account": "",
+	"trusted_proxies":          "",
 }
 
 func isSecret(k string) bool {

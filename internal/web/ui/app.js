@@ -123,7 +123,11 @@ function showAuth(setup) {
       ${inWindowApp() ? '<p style="text-align:center"><button type="button" class="link" data-action="switch-server">Change server</button></p>' : ''}</form>`;
     $('#loginForm').addEventListener('submit', async (e) => {
       e.preventDefault(); const d = formData(e.target);
-      try { await api('POST', '/api/login', { Username: d.username, Password: d.password }); boot(); }
+      try {
+        const r = await api('POST', '/api/login', { Username: d.username, Password: d.password });
+        if (r && r.need_code) return askLoginCode(r.ticket);
+        boot();
+      }
       catch (err) { $('#authErr').textContent = err.message; }
     });
   }
@@ -681,7 +685,7 @@ async function setMembers(el) {
   const users = await api('GET', '/api/users');
   const roles = [['admin', 'Admin (everything)'], ['adult', 'Adult (money + calendar)'], ['kid', 'Kid (calendar only)']];
   el.innerHTML = `<div class="grid"><div class="card"><h2>Household members</h2><ul class="list">${users.map((u) => `<li><span class="dot" style="background:${esc(u.color)}"></span><span class="grow"><b>${esc(u.display_name)}</b> <small>${esc(u.username)}</small><br>
-      <select data-role="${u.id}" style="width:auto">${opts(roles, u.role)}</select> <label class="inline"><input type="checkbox" data-active="${u.id}" ${u.active ? 'checked' : ''}> active</label></span><button class="small" data-pw="${u.id}">Reset password</button></li>`).join('')}</ul></div>
+      <select data-role="${u.id}" style="width:auto">${opts(roles, u.role)}</select> <label class="inline"><input type="checkbox" data-active="${u.id}" ${u.active ? 'checked' : ''}> active</label></span><button class="small" data-pw="${u.id}">Reset password</button><button class="small" data-r2fa="${u.id}" title="For someone who lost their phone and recovery codes">Reset 2-step</button></li>`).join('')}</ul></div>
     <form class="card" id="addUser"><h2>Add a member</h2><label>Name</label><input name="display_name" required><label>Username</label><input name="username" required autocomplete="off">
       <label>Starting password (8+; they can change it)</label><input name="password" type="password" minlength="8" required autocomplete="new-password">
       <label>Role</label><select name="role">${opts(roles, 'adult')}</select><label>Color</label><input type="color" name="color" value="#2bb673"><button class="primary" style="margin-top:.6rem">Add</button></form></div>`;
@@ -691,6 +695,11 @@ async function setMembers(el) {
   };
   el.querySelectorAll('[data-role]').forEach((s) => (s.onchange = () => save(s.dataset.role)));
   el.querySelectorAll('[data-active]').forEach((s) => (s.onchange = () => save(s.dataset.active)));
+  el.querySelectorAll('[data-r2fa]').forEach((b) => (b.onclick = async () => {
+    const u = users.find((x) => x.id === Number(b.dataset.r2fa));
+    if (!confirm(`Turn off two-step sign-in for ${u.display_name}? They can sign in with only their password until they turn it on again.`)) return;
+    try { await api('PUT', '/api/users/' + u.id, { Role: u.role, Active: u.active, Reset2FA: true }); toast('Two-step sign-in reset'); } catch (e) { fail(e); }
+  }));
   el.querySelectorAll('[data-pw]').forEach((b) => (b.onclick = () => {
     const u = users.find((x) => x.id === Number(b.dataset.pw));
     openModal(`<form id="rpw"><h2>New password for ${esc(u.display_name)}</h2><input type="password" name="pw" minlength="8" required autocomplete="new-password"><div class="actions"><button type="button" data-action="close">Cancel</button><button class="primary">Set</button></div></form>`, (sh) => {

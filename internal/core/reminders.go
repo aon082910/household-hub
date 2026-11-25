@@ -391,6 +391,7 @@ func (s *Store) RunEngine(ctx context.Context, send Sender) {
 				s.DB.Exec(`DELETE FROM sent_log WHERE sent<?`, cut)
 				s.DB.Exec(`DELETE FROM notifications WHERE read=1 AND created<?`, cut)
 				s.DB.Exec(`DELETE FROM sessions WHERE expires<?`, s.nowStr())
+				s.DB.Exec(`DELETE FROM audit_log WHERE at<?`, s.Now().AddDate(-1, 0, 0).Format(time.RFC3339))
 			}
 		}
 	}

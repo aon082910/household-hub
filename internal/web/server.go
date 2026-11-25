@@ -34,14 +34,16 @@ type Server struct {
 	Fetch    core.MailFetcher // reads mailboxes (IMAP; tests swap it)
 	mux      *http.ServeMux
 
-	failMu sync.Mutex
-	fails  map[string][]time.Time
+	failMu  sync.Mutex
+	fails   map[string][]time.Time
+	tickets *core.LoginTickets
 }
 
 // New builds the server and its routes.
 func New(s *core.Store, n *core.Notifier, version string) *Server {
-	sv := &Server{Store: s, Notifier: n, Version: version, Fetch: core.IMAPFetch, mux: http.NewServeMux(), fails: map[string][]time.Time{}}
+	sv := &Server{Store: s, Notifier: n, Version: version, Fetch: core.IMAPFetch, mux: http.NewServeMux(), fails: map[string][]time.Time{}, tickets: core.NewLoginTickets()}
 	sv.routes()
+	sv.routesSecurity()
 	sv.routesRound1()
 	sv.routesRound2()
 	sv.routesRound3()
@@ -341,6 +343,14 @@ func (sv *Server) auth(h handler, need string) http.HandlerFunc {
 			return
 		}
 		out, err := h(w, r, u)
+		if err == nil && r.Method != "GET" && r.Method != "HEAD" && kind != "device" {
+			// change log: who did what to which item, never the data sent
+			item := r.PathValue("id")
+			if item == "" {
+				item = r.PathValue("name")
+			}
+			sv.Store.Audit(u.ID, r.Pattern, item, sv.clientIP(r))
+		}
 		if err != nil {
 			var he httpErr
 			switch {
@@ -360,12 +370,29 @@ func (sv *Server) auth(h handler, need string) http.HandlerFunc {
 	}
 }
 
-func clientIP(r *http.Request) string {
+func remoteIP(r *http.Request) string {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return h
+}
+
+// clientIP is the visitor's address. Behind a trusted reverse proxy it is the last address in X-Forwarded-For
+// that is not itself a trusted proxy; otherwise the connection's own address (a forged header is ignored).
+func (sv *Server) clientIP(r *http.Request) string {
+	ip := remoteIP(r)
+	if !sv.Store.TrustedProxy(ip) {
+		return ip
+	}
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		p := strings.TrimSpace(parts[i])
+		if p != "" && !sv.Store.TrustedProxy(p) && net.ParseIP(p) != nil {
+			return p
+		}
+	}
+	return ip
 }
 
 func (sv *Server) tooManyFails(ip string) bool {
@@ -388,12 +415,12 @@ func (sv *Server) addFail(ip string) {
 	sv.failMu.Unlock()
 }
 
-func secureReq(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+func (sv *Server) secureReq(r *http.Request) bool {
+	return r.TLS != nil || (sv.Store.TrustedProxy(remoteIP(r)) && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
 }
 
 func (sv *Server) setCookie(w http.ResponseWriter, r *http.Request, token string, maxAge int) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secureReq(r), MaxAge: maxAge})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: sv.secureReq(r), MaxAge: maxAge})
 }
 
 func (sv *Server) publicSettings() map[string]string {
@@ -443,7 +470,7 @@ func (sv *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 403, map[string]string{"error": "cross-site request blocked"})
 		return
 	}
-	ip := clientIP(r)
+	ip := sv.clientIP(r)
 	if sv.tooManyFails(ip) {
 		writeJSON(w, 429, map[string]string{"error": "too many failed sign-ins; wait 10 minutes"})
 		return
@@ -456,12 +483,60 @@ func (sv *Server) login(w http.ResponseWriter, r *http.Request) {
 	u, err := sv.Store.Login(in.Username, in.Password)
 	if err != nil {
 		sv.addFail(ip)
+		sv.Store.Audit(0, "failed sign-in", trimName(in.Username), ip)
 		writeJSON(w, 401, map[string]string{"error": err.Error()})
 		return
 	}
+	if sv.Store.TwoStepOn(u.ID) {
+		writeJSON(w, 200, map[string]any{"need_code": true, "ticket": sv.tickets.Issue(u.ID)})
+		return
+	}
+	sv.finishLogin(w, r, u, ip)
+}
+
+func trimName(s string) string {
+	if len(s) > 40 {
+		return s[:40]
+	}
+	return s
+}
+
+func (sv *Server) finishLogin(w http.ResponseWriter, r *http.Request, u *core.User, ip string) {
 	tok, _ := sv.Store.NewSession(u.ID, "web", r.UserAgent())
 	sv.setCookie(w, r, tok, 30*86400)
+	sv.Store.Audit(u.ID, "signed in", "", ip)
 	writeJSON(w, 200, map[string]any{"user": u})
+}
+
+// loginCode is the second step: the authenticator (or a recovery) code for a ticket from login.
+func (sv *Server) loginCode(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		writeJSON(w, 403, map[string]string{"error": "cross-site request blocked"})
+		return
+	}
+	ip := sv.clientIP(r)
+	if sv.tooManyFails(ip) {
+		writeJSON(w, 429, map[string]string{"error": "too many failed sign-ins; wait 10 minutes"})
+		return
+	}
+	var in struct{ Ticket, Code string }
+	if err := readJSON(r, &in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	uid, ok := sv.tickets.Use(in.Ticket, func(user int64) bool { return sv.Store.CheckSecondStep(user, in.Code) })
+	if !ok {
+		sv.addFail(ip)
+		sv.Store.Audit(0, "wrong sign-in code", "", ip)
+		writeJSON(w, 401, map[string]string{"error": "wrong code (or it took too long: sign in again)"})
+		return
+	}
+	u, err := sv.Store.GetUser(uid)
+	if err != nil || !u.Active {
+		writeJSON(w, 401, map[string]string{"error": "sign in again"})
+		return
+	}
+	sv.finishLogin(w, r, u, ip)
 }
 
 func (sv *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -587,6 +662,7 @@ func (sv *Server) editUser(w http.ResponseWriter, r *http.Request, u *core.User)
 		Role     string
 		Active   bool
 		Password string
+		Reset2FA bool
 	}
 	if err := readJSON(r, &in); err != nil {
 		return nil, err
@@ -594,6 +670,9 @@ func (sv *Server) editUser(w http.ResponseWriter, r *http.Request, u *core.User)
 	id := pathID(r)
 	if err := sv.Store.SetRole(id, in.Role, in.Active); err != nil {
 		return nil, err
+	}
+	if in.Reset2FA {
+		sv.Store.DisableTwoStep(id, u.ID)
 	}
 	if in.Password != "" {
 		if err := sv.Store.SetPassword(id, in.Password); err != nil {

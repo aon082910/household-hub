@@ -389,6 +389,19 @@ var migrations = []string{
 		created_by INTEGER NOT NULL
 	);
 	CREATE INDEX meals_date ON meals(date);`,
+	// 8: two-step sign-in, change log
+	`ALTER TABLE users ADD COLUMN totp_secret TEXT NOT NULL DEFAULT '';
+	ALTER TABLE users ADD COLUMN totp_on INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE users ADD COLUMN recovery TEXT NOT NULL DEFAULT '';
+	CREATE TABLE audit_log (
+		id INTEGER PRIMARY KEY,
+		at TEXT NOT NULL,
+		user_id INTEGER,
+		action TEXT NOT NULL,
+		item TEXT NOT NULL DEFAULT '',
+		ip TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX audit_at ON audit_log(at);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

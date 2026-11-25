@@ -13,7 +13,9 @@ func (sv *Server) routesRound4() {
 	user := func(p string, h handler) { sv.mux.HandleFunc(p, sv.auth(h, "")) }
 	fin := func(p string, h handler) { sv.mux.HandleFunc(p, sv.auth(h, "finance")) }
 
-	user("GET /api/lists", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListLists(u.ID) })
+	user("GET /api/lists", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListLists(u.ID)
+	})
 	user("GET /api/lists/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		return sv.Store.GetList(u.ID, pathID(r))
 	})
