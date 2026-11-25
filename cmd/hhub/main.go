@@ -28,7 +28,7 @@ import (
 	"hhub/internal/web"
 )
 
-var version = "1.9.0"
+var version = "1.10.0"
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -202,6 +202,7 @@ func background() {
 	time.Sleep(3 * time.Second)
 	for {
 		client.PollOnce(client.ShowToast)
+		client.CheckForUpdate(version, client.ShowToast)
 		select {
 		case <-quit:
 			mu.Lock()

@@ -25,6 +25,12 @@ docker push "allornothing/household-hub:$Version"
 docker push allornothing/household-hub:latest
 docker rmi "allornothing/household-hub:$Version" allornothing/household-hub:latest | Out-Null
 
+# Windows build for the in-app updater
+$zip = Join-Path $here 'dist\HouseholdHub-windows.zip'
+Remove-Item $zip -ErrorAction SilentlyContinue
+Compress-Archive -Path (Join-Path $here 'hhub.exe'), (Join-Path $here 'HouseholdHub.exe'), (Join-Path $here 'icon.ico'), (Join-Path $here 'icon.png') -DestinationPath $zip
+gh release create "v$Version" $zip --repo aon082910/household-hub --title "Household Hub $Version" --notes $Notes
+
 $apps = 'D:\AI Projects\AoN-Unraid-Apps'
 Copy-Item $tpl (Join-Path $apps 'Household-Hub\household-hub.xml') -Force
 Push-Location $apps

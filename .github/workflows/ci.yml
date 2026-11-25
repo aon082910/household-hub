@@ -1,0 +1,44 @@
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Check web scripts
+        run: for f in internal/web/ui/*.js; do node --check "$f"; done
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t household-hub:ci .
+      - name: Push release image
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then echo "No DOCKERHUB_TOKEN secret: image not pushed"; exit 0; fi
+          echo "$DOCKERHUB_TOKEN" | docker login -u allornothing --password-stdin
+          v="${GITHUB_REF_NAME#v}"
+          docker tag household-hub:ci allornothing/household-hub:$v
+          docker tag household-hub:ci allornothing/household-hub:latest
+          docker push allornothing/household-hub:$v
+          docker push allornothing/household-hub:latest

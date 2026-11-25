@@ -250,3 +250,24 @@ func TestPrivateAlertsStayPrivate(t *testing.T) {
 	}
 	_ = dad
 }
+
+func TestOffsiteCopy(t *testing.T) {
+	s, _, _ := setupFin(t)
+	dst := t.TempDir()
+	name, err := s.RunBackup(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CopyBackupOffsite(dst, name, 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, name)); err != nil {
+		t.Error("copy missing")
+	}
+	if err := s.CopyBackupOffsite(filepath.Join(filepath.Dir(s.Path), "backups"), name, 5); err == nil {
+		t.Error("copy into the data folder allowed")
+	}
+	if err := s.CopyBackupOffsite(filepath.Join(dst, "nope"), name, 5); err == nil {
+		t.Error("missing folder not reported")
+	}
+}

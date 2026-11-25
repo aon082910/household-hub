@@ -34,6 +34,7 @@ var (
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	build    = "0"
+	version  = "dev" // set by build.ps1
 )
 
 func utf16p(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
@@ -256,6 +257,43 @@ func main() {
 	w.Bind("hhubSwitchServer", func() { w.Dispatch(func() { showChooser("") }) })
 	w.Bind("hhubHasDevice", func(user string) bool { return client.Load().HasDevice(user) })
 	w.Bind("hhubHostName", func() string { h, _ := os.Hostname(); return h })
+	w.Bind("hhubVersion", func() (string, error) {
+		out := map[string]any{"current": version}
+		rel, err := client.LatestRelease()
+		if err != nil {
+			out["error"] = err.Error()
+		} else {
+			out["latest"], out["notes"], out["newer"] = rel.Version, rel.Notes, client.Newer(rel.Version, version)
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	})
+	w.Bind("hhubInstallUpdate", func() error {
+		rel, err := client.LatestRelease()
+		if err != nil {
+			return err
+		}
+		if !client.Newer(rel.Version, version) {
+			return errors.New("already up to date")
+		}
+		dir, err := client.DownloadUpdate(rel)
+		if err != nil {
+			return err
+		}
+		self, _ := os.Executable()
+		script, err := client.UpdateScript(dir, filepath.Dir(self))
+		if err != nil {
+			return err
+		}
+		cmd := exec.Command("cmd.exe", "/C", script)
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000008 | 0x00000200 | 0x08000000}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		ctl("POST", "/quit")
+		go func() { time.Sleep(500 * time.Millisecond); w.Dispatch(func() { w.Terminate() }) }()
+		return nil
+	})
 	w.Bind("hhubSaveDevice", func(js string) error {
 		var in struct {
 			Token  string `json:"token"`

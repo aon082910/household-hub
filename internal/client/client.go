@@ -36,6 +36,28 @@ type Config struct {
 	Port      int      `json:"port"`       // host mode
 	LAN       bool     `json:"lan"`        // host mode: let phones and other PCs connect
 	Devices   []Device `json:"devices"`
+	// update check
+	UpdateChecked string `json:"update_checked"`
+	UpdateToldFor string `json:"update_told_for"` // version already announced
+}
+
+// CheckForUpdate looks for a newer Windows build once a day and shows one notification per new version.
+func CheckForUpdate(current string, show func(title, body string) error) {
+	c := Load()
+	if t, err := time.Parse(time.RFC3339, c.UpdateChecked); err == nil && time.Since(t) < 20*time.Hour {
+		return
+	}
+	c.UpdateChecked = time.Now().Format(time.RFC3339)
+	Save(c)
+	rel, err := LatestRelease()
+	if err != nil || !Newer(rel.Version, current) || c.UpdateToldFor == rel.Version {
+		return
+	}
+	if show("Household Hub "+rel.Version+" is available", "Open Household Hub, then Settings > Windows app > Install update.") == nil {
+		c = Load()
+		c.UpdateToldFor = rel.Version
+		Save(c)
+	}
 }
 
 var mu sync.Mutex

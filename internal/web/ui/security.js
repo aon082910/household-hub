@@ -71,7 +71,8 @@ async function setAccess(el) {
     <p>HTTPS is needed for browser pop-ups on phones and before using the app away from home. Easiest choices on Unraid:</p>
     <ol><li><b>Tailscale</b> (you already use it): install Tailscale on Unraid and your phones; open <code>http://&lt;server's Tailscale name&gt;:8095</code>. Private, nothing open to the internet. For HTTPS run <code>tailscale serve --bg --https=443 http://localhost:8095</code> on the server and use the https://...ts.net address.</li>
     <li><b>Nginx Proxy Manager</b> app: add a proxy host to <code>192.168.1.144:8095</code> with a Let's Encrypt certificate, then put NPM's container address in the box on the left. Turn on two-step sign-in for everyone first.</li></ol>
-    <p class="mute">Never forward port 8095 straight from your router to the internet.</p></div></div>`;
+    <p class="mute">Never forward port 8095 straight from your router to the internet.</p>
+    <h3>Install on a phone</h3><p>Once the app opens over https, use the browser menu: iPhone Safari: Share &gt; Add to Home Screen; Android Chrome: menu &gt; Install app. It then opens full screen like an app, and browser pop-ups work.</p></div></div>`;
   $('#pxForm').onsubmit = async (e) => { e.preventDefault(); try { await api('PUT', '/api/settings', formData(e.target)); toast('Saved'); } catch (err) { fail(err); } };
 }
 

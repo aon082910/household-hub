@@ -24,12 +24,12 @@ try {
     & go test ./...
     if ($LASTEXITCODE) { throw 'go test failed' }
 
-    & go build -trimpath -ldflags '-s -w -H=windowsgui' -o hhub.exe ./cmd/hhub
+    & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.version=$version" -o hhub.exe ./cmd/hhub
     if ($LASTEXITCODE) { throw 'go build hhub failed' }
     # Smart App Control can block a fresh unsigned exe; the window build is repeated with another build number until it starts.
     $ok = $false
     for ($n = 1; $n -le 4 -and -not $ok; $n++) {
-        & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.build=$n" -o HouseholdHub.exe ./cmd/hhub-window
+        & go build -trimpath -ldflags "-s -w -H=windowsgui -X main.build=$n -X main.version=$version" -o HouseholdHub.exe ./cmd/hhub-window
         if ($LASTEXITCODE) { throw 'go build window failed' }
         Start-Sleep -Seconds 2
         try { $p = Start-Process -FilePath (Join-Path $here 'HouseholdHub.exe') -ArgumentList '--check' -Wait -PassThru; if ($p.ExitCode -eq 0) { $ok = $true } } catch { Write-Host "Windows blocked window build ${n}: $($_.Exception.Message)" }

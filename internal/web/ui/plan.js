@@ -112,6 +112,8 @@ async function setBackupAuto(el) {
     <p class="mute">This protects against mistakes and a damaged database. It is on the same disk as the app, so also keep your normal appdata backup (or copy this folder elsewhere) for a dead disk.</p>
     <form id="bkForm" class="form2"><div><label>Hour of day (0-23)</label><input name="backup_hour" type="number" min="0" max="23" value="${esc(r.hour)}"></div>
     <div><label>Copies to keep (0 = off)</label><input name="backup_keep" type="number" min="0" max="365" value="${esc(r.keep)}"></div>
+    <div class="full"><label>Also copy each backup to (another disk or share; empty = off)</label><input name="backup_copy_dir" value="${esc(r.copy_dir)}" placeholder="/backup-copy">
+      <small class="mute">On Unraid, map the template's "Backup copy folder" (for example /mnt/user/Backup_Drive/household-hub) and type <code>/backup-copy</code> here.${r.last_copy ? ' Last copy: ' + esc(r.last_copy) : ''}</small></div>
     <div class="full actions"><button type="button" id="bkNow">Back up now</button><button class="primary">Save</button></div></form></div>
     <div class="card"><h2>Saved copies</h2><ul class="list">${r.backups.map((b) => `<li><span class="grow">${esc(b.name)}<br><small>${(b.size / 1048576).toFixed(1)} MB</small></span><a class="btn small" href="/api/backups/${encodeURIComponent(b.name)}" download>Download</a></li>`).join('') || '<li class="empty">None yet.</li>'}</ul>
     <a class="btn" href="/api/backup" download>Download a fresh copy</a></div>

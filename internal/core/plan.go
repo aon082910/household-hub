@@ -646,6 +646,11 @@ func (s *Store) DailyChecks(now time.Time, send Sender) {
 			s.alertAdmins(send, Message{Title: "Household Hub backup failed", Body: err.Error()})
 		} else {
 			s.SaveSettings(map[string]string{"last_backup": name})
+			if dir := cfg["backup_copy_dir"]; dir != "" {
+				if err := s.CopyBackupOffsite(dir, name, keep); err != nil {
+					s.alertAdmins(send, Message{Title: "Household Hub backup copy failed", Body: err.Error()})
+				}
+			}
 		}
 	}
 	bh, _ := strconv.Atoi(cfg["bill_remind_hour"])

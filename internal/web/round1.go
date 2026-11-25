@@ -80,7 +80,8 @@ func (sv *Server) routesRound1() {
 	adm("GET /api/backups", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		list, err := sv.Store.ListBackups()
 		set := sv.Store.Settings(true)
-		return map[string]any{"backups": list, "dir": sv.Store.BackupDir(), "keep": set["backup_keep"], "hour": set["backup_hour"]}, err
+		return map[string]any{"backups": list, "dir": sv.Store.BackupDir(), "keep": set["backup_keep"], "hour": set["backup_hour"],
+			"copy_dir": set["backup_copy_dir"], "last_copy": set["last_backup_copy"]}, err
 	})
 	adm("POST /api/backups/run", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		keep, _ := strconv.Atoi(sv.Store.Setting("backup_keep"))
