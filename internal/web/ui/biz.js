@@ -82,11 +82,12 @@ async function txFormExtras(t, box) {
 }
 
 // ---- Business page: tax summary and category rules ----
+const BIZ_TABS = [['tax', 'Tax summary', () => taxTab], ['rules', 'Category rules', () => rulesTab]];
 async function businessView(el) {
   const tab = S.bizTab || 'tax';
-  el.innerHTML = `<h1>Business</h1><div class="tabs">${[['tax', 'Tax summary'], ['rules', 'Category rules']].map(([k, t]) => `<button data-btab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="bizBody"></div>`;
+  el.innerHTML = `<h1>Business</h1><div class="tabs">${BIZ_TABS.map(([k, t]) => `<button data-btab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="bizBody"></div>`;
   el.querySelectorAll('[data-btab]').forEach((b) => (b.onclick = () => { S.bizTab = b.dataset.btab; businessView(el); }));
-  await (tab === 'tax' ? taxTab : rulesTab)($('#bizBody'));
+  await (BIZ_TABS.find((x) => x[0] === tab) || BIZ_TABS[0])[2]()($('#bizBody'));
 }
 
 async function taxTab(el) {

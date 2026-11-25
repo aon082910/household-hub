@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +22,7 @@ func openAtVersion(t *testing.T, n int) string {
 			t.Fatalf("migration %d: %v", i+1, err)
 		}
 	}
-	db.Exec(`PRAGMA user_version = ` + string(rune('0'+n)))
+	db.Exec(`PRAGMA user_version = ` + strconv.Itoa(n))
 	db.Exec(`INSERT INTO users(username,display_name,pass_hash,created) VALUES('a','A','x','2026-01-01')`)
 	db.Exec(`INSERT INTO accounts(name,owner_id) VALUES('Old',1)`)
 	db.Exec(`INSERT INTO transactions(date,amount_cents,account_id,user_id,created) VALUES('2026-11-01',-500,1,1,'2026-11-01')`)

@@ -31,6 +31,9 @@ var SettingKeys = map[string]string{
 	"forecast_default_account": "",
 	"trusted_proxies":          "",
 	"backup_copy_dir":          "",
+	"est_tax_rate":             "25",   // percent of business profit to set aside
+	"mileage_rate":             "0.70", // dollars per business mile (check the IRS rate each year)
+	"est_tax_reminders":        "1",
 	"last_backup_copy":         "",
 }
 

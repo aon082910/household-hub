@@ -658,6 +658,7 @@ func (s *Store) DailyChecks(now time.Time, send Sender) {
 		return
 	}
 	s.docReminders(now, send, cfg)
+	s.estTaxReminders(now, send, cfg)
 	// the heavier checks below run once an hour, not every minute
 	if !s.claim("moneyscan", 0, now.Format("2006-01-02T15"), "", 0) {
 		return

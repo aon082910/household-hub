@@ -28,6 +28,7 @@ type Mapping struct {
 	Status      int    `json:"status"` // PayPal: only "Completed" rows are imported
 	Type        int    `json:"type"`   // PayPal: transfers and holds are recognised from this
 	Fee         int    `json:"fee"`
+	Net         int    `json:"net"`    // sales platforms: what was paid out
 	Invert      bool   `json:"invert"` // file shows spending as positive numbers
 	DateFormat  string `json:"date_format"`
 	Profile     string `json:"profile"` // "paypal" or "generic"
@@ -42,8 +43,10 @@ type ImportRow struct {
 	Notes       string `json:"notes"`
 	ExternalID  string `json:"external_id"`
 	Transfer    bool   `json:"transfer"`
-	Skip        string `json:"skip,omitempty"`   // why the row is left out
-	Status      string `json:"status,omitempty"` // new, duplicate, match (filled by preview)
+	Business    bool   `json:"business,omitempty"`
+	Category    string `json:"category,omitempty"` // category name to set (sales platform imports)
+	Skip        string `json:"skip,omitempty"`     // why the row is left out
+	Status      string `json:"status,omitempty"`   // new, duplicate, match (filled by preview)
 }
 
 // Parsed is a whole statement file.
@@ -168,7 +171,7 @@ func GuessMapping(headers []string) Mapping {
 	for i, x := range headers {
 		h[i] = strings.ToLower(strings.TrimSpace(x))
 	}
-	m := Mapping{Date: -1, Amount: -1, Debit: -1, Credit: -1, Payee: -1, Description: -1, ID: -1, Status: -1, Type: -1, Fee: -1, Profile: "generic"}
+	m := Mapping{Date: -1, Amount: -1, Debit: -1, Credit: -1, Payee: -1, Description: -1, ID: -1, Status: -1, Type: -1, Fee: -1, Net: -1, Profile: "generic"}
 	if findCol(h, "transaction id") >= 0 && (findCol(h, "gross") >= 0 || findCol(h, "net") >= 0) {
 		m.Profile = "paypal"
 		m.Date = findCol(h, "date")
@@ -182,6 +185,23 @@ func GuessMapping(headers []string) Mapping {
 		m.Status = findCol(h, "status")
 		m.Type = findCol(h, "type")
 		return m
+	}
+	// sales platforms (Etsy, Stripe, Shopify, Gumroad...): a fee column next to the sale amount
+	if fee := findCol(h, "fee"); fee >= 0 {
+		if amt := findCol(h, "gross", "amount", "sale price", "price", "charges", "total"); amt >= 0 && amt != fee {
+			m.Profile = "platform"
+			m.Date = findCol(h, "created", "date")
+			m.Amount, m.Fee, m.Net = amt, fee, findCol(h, "net")
+			m.Payee = findCol(h, "title", "item name", "product", "item", "description", "info", "name")
+			m.Description = findCol(h, "info", "order", "description", "source")
+			if m.Description == m.Payee {
+				m.Description = -1
+			}
+			m.ID = findCol(h, "transaction id", "order id", "charge id", "id", "order number", "order")
+			m.Type = findCol(h, "type")
+			m.Status = findCol(h, "status")
+			return m
+		}
 	}
 	m.Date = findCol(h, "posted date", "transaction date", "date")
 	m.Amount = findCol(h, "amount", "transaction amount")
@@ -233,7 +253,7 @@ func parseCSV(data []byte, m *Mapping) (*Parsed, error) {
 			break
 		}
 		j := strings.ToLower(strings.Join(rec, "|"))
-		if strings.Contains(j, "date") && (strings.Contains(j, "amount") || strings.Contains(j, "debit") || strings.Contains(j, "gross") || strings.Contains(j, "withdraw")) {
+		if (strings.Contains(j, "date") || strings.Contains(j, "created")) && (strings.Contains(j, "amount") || strings.Contains(j, "debit") || strings.Contains(j, "gross") || strings.Contains(j, "withdraw") || strings.Contains(j, "price") || strings.Contains(j, "charges")) {
 			hi = i
 			break
 		}
@@ -249,6 +269,7 @@ func parseCSV(data []byte, m *Mapping) (*Parsed, error) {
 	p.Mapping = *m
 	seen := map[string]int{}
 	for n, rec := range recs[hi+1:] {
+		var pendingFee *ImportRow
 		if len(rec) == 0 || strings.TrimSpace(strings.Join(rec, "")) == "" {
 			continue
 		}
@@ -259,7 +280,9 @@ func parseCSV(data []byte, m *Mapping) (*Parsed, error) {
 		}
 		row.Date = d
 		var amt int64
-		if m.Amount >= 0 {
+		if m.Profile == "platform" {
+			amt, err = platformCents(cell(rec, m.Amount))
+		} else if m.Amount >= 0 {
 			amt, err = ParseCents(cell(rec, m.Amount))
 		} else {
 			var dr, cr int64
@@ -289,6 +312,35 @@ func parseCSV(data []byte, m *Mapping) (*Parsed, error) {
 			if row.Payee == "" {
 				row.Payee = typ
 			}
+		} else if m.Profile == "platform" {
+			fee, _ := platformCents(cell(rec, m.Fee))
+			net, _ := platformCents(cell(rec, m.Net))
+			st := strings.ToLower(cell(rec, m.Status))
+			switch {
+			case st != "" && (strings.Contains(st, "pending") || strings.Contains(st, "fail") || strings.Contains(st, "void")):
+				row.Skip = "status " + st
+			case platformPayout.MatchString(typ):
+				row.Transfer = true // money moved to the bank: the bank import shows the other side
+				if row.AmountCents == 0 {
+					row.AmountCents = net
+				}
+				if row.AmountCents > 0 {
+					row.AmountCents = -row.AmountCents
+				}
+			default:
+				row.Business = true
+				if row.AmountCents == 0 && net != 0 {
+					row.AmountCents = net
+					fee = 0
+				}
+				row.Category = platformCategory(typ+" "+row.Payee, row.AmountCents)
+				if fee != 0 && row.Skip == "" {
+					pendingFee = &ImportRow{Line: row.Line, Date: row.Date, AmountCents: -abs(fee), Payee: "Fees: " + row.Payee, Business: true, Category: "Business: Bank & payment fees"}
+				}
+			}
+			if row.Payee == "" {
+				row.Payee = typ
+			}
 		} else if regexp.MustCompile(`(?i)transfer`).MatchString(typ) {
 			row.Transfer = true
 		}
@@ -306,6 +358,10 @@ func parseCSV(data []byte, m *Mapping) (*Parsed, error) {
 			row.ExternalID = "h:" + hex.EncodeToString(h[:8])
 		}
 		p.Rows = append(p.Rows, row)
+		if pendingFee != nil {
+			pendingFee.ExternalID = row.ExternalID + ":fee"
+			p.Rows = append(p.Rows, *pendingFee)
+		}
 	}
 	return p, nil
 }
@@ -506,7 +562,10 @@ func (s *Store) CommitImport(uid, accountID int64, p *Parsed, private bool) (map
 			continue
 		}
 		acc := accountID
-		t := Transaction{Date: r.Date, AmountCents: r.AmountCents, AccountID: &acc, Payee: r.Payee, Notes: r.Notes, ExternalID: r.ExternalID, Source: "import", Transfer: r.Transfer, Private: private}
+		t := Transaction{Date: r.Date, AmountCents: r.AmountCents, AccountID: &acc, Payee: r.Payee, Notes: r.Notes, ExternalID: r.ExternalID, Source: "import", Transfer: r.Transfer, Private: private, Business: r.Business}
+		if r.Category != "" {
+			t.CategoryID = s.categoryByName(r.Category)
+		}
 		st, err := s.AddImported(uid, &t)
 		if err != nil {
 			return counts, fmt.Errorf("line %d: %w", r.Line, err)
@@ -517,4 +576,40 @@ func (s *Store) CommitImport(uid, accountID int64, p *Parsed, private bool) (map
 		s.SaveMapping(accountID, p.Mapping)
 	}
 	return counts, nil
+}
+
+var platformPayout = regexp.MustCompile(`(?i)payout|deposit|transfer|withdraw`)
+
+// platformCents reads sales-platform amounts, where "--" or an empty cell means nothing.
+func platformCents(v string) (int64, error) {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "--" || v == "-" {
+		return 0, nil
+	}
+	return ParseCents(strings.ReplaceAll(v, "USD", ""))
+}
+
+// platformCategory picks a business category for a sales-platform line.
+func platformCategory(text string, amount int64) string {
+	t := strings.ToLower(text)
+	switch {
+	case strings.Contains(t, "fee") || strings.Contains(t, "listing") || strings.Contains(t, "processing"):
+		return "Business: Bank & payment fees"
+	case strings.Contains(t, "marketing") || strings.Contains(t, "ads") || strings.Contains(t, "advert") || strings.Contains(t, "promot"):
+		return "Business: Advertising"
+	case strings.Contains(t, "shipping") || strings.Contains(t, "postage") || strings.Contains(t, "label"):
+		return "Business: Shipping & postage"
+	case amount < 0 && !strings.Contains(t, "refund"):
+		return "Business: Bank & payment fees"
+	}
+	return "Business: Sales"
+}
+
+// categoryByName finds a category id by its name.
+func (s *Store) categoryByName(name string) *int64 {
+	var id int64
+	if s.DB.QueryRow(`SELECT id FROM categories WHERE name=?`, name).Scan(&id) != nil {
+		return nil
+	}
+	return &id
 }

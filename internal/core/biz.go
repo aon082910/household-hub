@@ -460,6 +460,12 @@ func (s *Store) BusinessTaxReport(uid int64, year int) (*TaxReport, error) {
 	for _, l := range byKey {
 		r.Lines = append(r.Lines, *l)
 	}
+	if miles, cents := s.MileageTotal(year, ""); cents > 0 {
+		var trips int
+		s.DB.QueryRow(`SELECT COUNT(*) FROM trips WHERE substr(date,1,4)=?`, fmt.Sprint(year)).Scan(&trips)
+		r.Lines = append(r.Lines, TaxLine{Line: "9 Car and truck expenses", Category: fmt.Sprintf("Standard mileage (%.1f mi)", miles), Kind: "expense", AmountCents: cents, Count: trips})
+		r.ExpenseCents += cents
+	}
 	sort.Slice(r.Lines, func(i, j int) bool {
 		if r.Lines[i].Kind != r.Lines[j].Kind {
 			return r.Lines[i].Kind == "income"

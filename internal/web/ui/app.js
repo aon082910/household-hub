@@ -762,7 +762,7 @@ async function importView(el) {
 function importFile(el) {
   const accs = S.accounts.filter((a) => !a.archived);
   el.innerHTML = `<div class="card"><h2>Upload a statement</h2>
-    <p class="mute">Download a CSV, OFX or QFX file from your bank or PayPal (PayPal: Activity &gt; Statements &gt; Activity report, CSV). Rows you already have are skipped, so importing the same file twice is safe.</p>
+    <p class="mute">Download a CSV, OFX or QFX file from your bank or PayPal (PayPal: Activity &gt; Statements &gt; Activity report, CSV). Rows you already have are skipped, so importing the same file twice is safe. Sales exports from Etsy, Stripe, Shopify or Gumroad work too: sales, fees and payouts are split into business income, fees and transfers (use one account per platform, e.g. "Etsy balance").</p>
     <div class="form2"><div><label>Into account</label><select id="impAcc">${opts(accs.map((a) => [a.id, a.name]), S.impAcc || (accs[0] || {}).id)}</select></div>
     <div><label>File</label><input type="file" id="impFile" accept=".csv,.ofx,.qfx,.txt"></div></div>
     <div class="actions"><button class="primary" id="impPrev">Preview</button></div></div><div id="impResult"></div>`;

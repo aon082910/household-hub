@@ -464,6 +464,20 @@ var migrations = []string{
 		deleted_at TEXT NOT NULL,
 		data TEXT NOT NULL
 	);`,
+	// 11: mileage log, estimated tax category
+	`CREATE TABLE trips (
+		id INTEGER PRIMARY KEY,
+		date TEXT NOT NULL,
+		from_place TEXT NOT NULL DEFAULT '',
+		to_place TEXT NOT NULL DEFAULT '',
+		purpose TEXT NOT NULL,
+		miles_x10 INTEGER NOT NULL,
+		vehicle TEXT NOT NULL DEFAULT '',
+		user_id INTEGER NOT NULL REFERENCES users(id),
+		created TEXT NOT NULL
+	);
+	CREATE INDEX trips_date ON trips(date);
+	INSERT OR IGNORE INTO categories(name,kind,tax_line) VALUES ('Estimated tax payments','expense','');`,
 }
 
 // Open opens (and creates or migrates) the database at path.
