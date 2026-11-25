@@ -505,6 +505,7 @@ async function moneyView(el) {
   $('#fQ').onchange = (e) => { f.q = e.target.value; moneyView(el); };
   el.querySelectorAll('[data-tx]').forEach((r) => (r.onclick = (e) => { if (e.target.closest('[data-sel]')) return; txForm(txs.find((t) => t.id === Number(r.dataset.tx))); }));
   if (typeof bulkBar === 'function') bulkBar(el, () => moneyView(el));
+  if (typeof moneyExtras === 'function') moneyExtras(el);
 }
 function txForm(t) {
   const isNew = !t.id; const type = t.amount_cents > 0 ? 'income' : 'expense';
