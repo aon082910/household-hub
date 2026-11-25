@@ -28,7 +28,7 @@ import (
 	"hhub/internal/web"
 )
 
-var version = "1.8.1"
+var version = "1.9.0"
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {

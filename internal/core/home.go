@@ -107,7 +107,14 @@ func (s *Store) SaveList(uid int64, l *List) error {
 
 // DeleteList removes a list and its items.
 func (s *Store) DeleteList(uid, id int64) error {
-	return mustChange(s.DB.Exec(`DELETE FROM lists WHERE id=? AND `+visible, id, uid))
+	l, err := s.GetList(uid, id)
+	if err != nil {
+		return err
+	}
+	return s.trashThen("list", l.Name, l.OwnerID, l.Private, uid, []partQuery{
+		{"lists", "id=?", []any{id}},
+		{"list_items", "list_id=?", []any{id}},
+	}, func() error { return mustChange(s.DB.Exec(`DELETE FROM lists WHERE id=?`, id)) })
 }
 
 // AddItems adds one item per line ("2 milk" keeps "2" as the quantity when it starts with a number).
@@ -257,8 +264,15 @@ func (s *Store) SaveChore(uid int64, c *Chore) error {
 }
 
 // DeleteChore removes a chore.
-func (s *Store) DeleteChore(id int64) error {
-	return mustChange(s.DB.Exec(`DELETE FROM chores WHERE id=?`, id))
+func (s *Store) DeleteChore(by, id int64) error {
+	var name string
+	if s.DB.QueryRow(`SELECT name FROM chores WHERE id=?`, id).Scan(&name) != nil {
+		return ErrNotFound
+	}
+	return s.trashThen("chore", name, 0, false, by, []partQuery{
+		{"chores", "id=?", []any{id}},
+		{"chore_done", "chore_id=?", []any{id}},
+	}, func() error { return mustChange(s.DB.Exec(`DELETE FROM chores WHERE id=?`, id)) })
 }
 
 // ChoresDue lists chore occurrences from `from` to `to` (dates) with their status. A chore that is not done
@@ -482,8 +496,13 @@ func (s *Store) SaveMeal(uid int64, m *Meal) error {
 }
 
 // DeleteMeal removes a meal.
-func (s *Store) DeleteMeal(id int64) error {
-	return mustChange(s.DB.Exec(`DELETE FROM meals WHERE id=?`, id))
+func (s *Store) DeleteMeal(by, id int64) error {
+	var t, d string
+	if s.DB.QueryRow(`SELECT title,date FROM meals WHERE id=?`, id).Scan(&t, &d) != nil {
+		return ErrNotFound
+	}
+	return s.trashThen("meal", t+" ("+d+")", 0, false, by, []partQuery{{"meals", "id=?", []any{id}}},
+		func() error { return mustChange(s.DB.Exec(`DELETE FROM meals WHERE id=?`, id)) })
 }
 
 // MealsToList adds the ingredients of meals in a date range to a shopping list, skipping ones already open on it.

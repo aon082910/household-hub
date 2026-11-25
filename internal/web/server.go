@@ -49,6 +49,7 @@ func New(s *core.Store, n *core.Notifier, version string) *Server {
 	sv.routesRound3()
 	sv.routesRound4()
 	sv.routesRound6()
+	sv.routesRound7()
 	return sv
 }
 

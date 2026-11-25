@@ -110,7 +110,16 @@ func (s *Store) SaveGoal(uid int64, g *Goal) error {
 
 // DeleteGoal removes a goal.
 func (s *Store) DeleteGoal(uid, id int64) error {
-	return mustChange(s.DB.Exec(`DELETE FROM goals WHERE id=? AND `+visible, id, uid))
+	var name string
+	var owner int64
+	var p int
+	if s.DB.QueryRow(`SELECT name,owner_id,private FROM goals WHERE id=? AND `+visible, id, uid).Scan(&name, &owner, &p) != nil {
+		return ErrNotFound
+	}
+	return s.trashThen("goal", name, owner, p == 1, uid, []partQuery{
+		{"goals", "id=?", []any{id}},
+		{"goal_moves", "goal_id=?", []any{id}},
+	}, func() error { return mustChange(s.DB.Exec(`DELETE FROM goals WHERE id=?`, id)) })
 }
 
 // AddToGoal records money put aside (negative = taken out) for a goal without a linked account.

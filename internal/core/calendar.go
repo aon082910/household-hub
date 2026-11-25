@@ -177,7 +177,12 @@ func (s *Store) SaveEvent(uid int64, e *Event) error {
 
 // DeleteEvent removes an event.
 func (s *Store) DeleteEvent(uid, id int64) error {
-	return mustChange(s.DB.Exec(`DELETE FROM events WHERE id=? AND `+visible, id, uid))
+	e, err := s.GetEvent(uid, id)
+	if err != nil {
+		return err
+	}
+	return s.trashThen("event", e.Title+" ("+e.Start[:10]+")", e.OwnerID, e.Private, uid, []partQuery{{"events", "id=?", []any{id}}},
+		func() error { return mustChange(s.DB.Exec(`DELETE FROM events WHERE id=?`, id)) })
 }
 
 // eventOccurrences expands one event in [from, to]. An occurrence that started before `from` but is still

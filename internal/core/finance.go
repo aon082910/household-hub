@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -313,11 +314,23 @@ func (s *Store) SaveTransaction(uid int64, t *Transaction) error {
 
 // DeleteTransaction removes a transaction (and un-pays a bill it paid).
 func (s *Store) DeleteTransaction(uid, id int64) error {
-	if err := mustChange(s.DB.Exec(`DELETE FROM transactions WHERE id=? AND (private=0 OR user_id=?)`, id, uid)); err != nil {
-		return err
+	var payee, date string
+	var amt, owner int64
+	var priv int
+	if s.DB.QueryRow(`SELECT payee,date,amount_cents,user_id,private FROM transactions WHERE id=? AND parent_id IS NULL AND (private=0 OR user_id=?)`, id, uid).Scan(&payee, &date, &amt, &owner, &priv) != nil {
+		return ErrNotFound
 	}
-	s.DB.Exec(`UPDATE bill_payments SET transaction_id=NULL WHERE transaction_id=?`, id)
-	return nil
+	label := fmt.Sprintf("%s %s %s", date, payee, FormatCents(amt))
+	return s.trashThen("transaction", label, owner, priv == 1, uid, []partQuery{
+		{"transactions", "id=? OR parent_id=?", []any{id, id}},
+		{"attachments", "transaction_id=?", []any{id}},
+	}, func() error {
+		if err := mustChange(s.DB.Exec(`DELETE FROM transactions WHERE id=?`, id)); err != nil {
+			return err
+		}
+		s.DB.Exec(`UPDATE bill_payments SET transaction_id=NULL WHERE transaction_id=?`, id)
+		return nil
+	})
 }
 
 // ---------- bills ----------
@@ -401,7 +414,14 @@ func (b *Bill) b2iAutopay() int { return b2i(b.Autopay) }
 
 // DeleteBill removes a bill and its payment history (transactions stay).
 func (s *Store) DeleteBill(uid, id int64) error {
-	return mustChange(s.DB.Exec(`DELETE FROM bills WHERE id=? AND `+visible, id, uid))
+	b, err := s.GetBill(uid, id)
+	if err != nil {
+		return err
+	}
+	return s.trashThen("bill", b.Name, b.OwnerID, b.Private, uid, []partQuery{
+		{"bills", "id=?", []any{id}},
+		{"bill_payments", "bill_id=?", []any{id}},
+	}, func() error { return mustChange(s.DB.Exec(`DELETE FROM bills WHERE id=?`, id)) })
 }
 
 // BillDues expands bills into due dates within [from, to] and marks paid / overdue ones.

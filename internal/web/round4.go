@@ -83,7 +83,7 @@ func (sv *Server) routesRound4() {
 	fin("POST /api/chores", saveChore)
 	fin("PUT /api/chores/{id}", saveChore)
 	fin("DELETE /api/chores/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
-		return ok(), sv.Store.DeleteChore(pathID(r))
+		return ok(), sv.Store.DeleteChore(u.ID, pathID(r))
 	})
 	user("POST /api/chores/{id}/done", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		var in struct {
@@ -139,7 +139,7 @@ func (sv *Server) routesRound4() {
 	user("POST /api/meals", saveMeal)
 	user("PUT /api/meals/{id}", saveMeal)
 	user("DELETE /api/meals/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
-		return ok(), sv.Store.DeleteMeal(pathID(r))
+		return ok(), sv.Store.DeleteMeal(u.ID, pathID(r))
 	})
 	user("POST /api/meals/to-list", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		var in struct {

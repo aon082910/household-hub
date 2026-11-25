@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -101,8 +102,66 @@ func (s *Store) claim(kind string, id int64, occ, lead string, uid int64) bool {
 	return n == 1
 }
 
-// notify stores the bell message and sends it out on the user's channels.
+// inQuiet reports whether t is inside the user's quiet hours, and when they end.
+func inQuiet(u *User, t time.Time) (bool, time.Time) {
+	a, b := u.QuietStart, u.QuietEnd
+	if a < 0 || b < 0 || a == b {
+		return false, t
+	}
+	h := t.Hour()
+	in := (a < b && h >= a && h < b) || (a > b && (h >= a || h < b))
+	if !in {
+		return false, t
+	}
+	end := time.Date(t.Year(), t.Month(), t.Day(), b, 0, 0, 0, t.Location())
+	if !end.After(t) {
+		end = end.AddDate(0, 0, 1)
+	}
+	return true, end
+}
+
+// notify stores the bell message and sends it out on the user's channels. During the user's quiet hours the
+// whole message waits and goes out when they end.
 func (s *Store) notify(send Sender, u *User, m Message) {
+	if q, until := inQuiet(u, s.Now()); q {
+		b, _ := json.Marshal(m)
+		s.DB.Exec(`INSERT INTO pending_sends(user_id,message,due) VALUES(?,?,?)`, u.ID, string(b), until.Format(time.RFC3339))
+		return
+	}
+	s.deliverNow(send, u, m)
+}
+
+// FlushPending sends messages held back by quiet hours once they are due.
+func (s *Store) FlushPending(send Sender) {
+	rows, err := s.DB.Query(`SELECT id,user_id,message FROM pending_sends WHERE due<=? ORDER BY id`, s.nowStr())
+	if err != nil {
+		return
+	}
+	type p struct {
+		id, uid int64
+		msg     string
+	}
+	var list []p
+	for rows.Next() {
+		var x p
+		rows.Scan(&x.id, &x.uid, &x.msg)
+		list = append(list, x)
+	}
+	rows.Close()
+	for _, x := range list {
+		s.DB.Exec(`DELETE FROM pending_sends WHERE id=?`, x.id)
+		u, err := s.GetUser(x.uid)
+		if err != nil || !u.Active {
+			continue
+		}
+		var m Message
+		if json.Unmarshal([]byte(x.msg), &m) == nil {
+			s.deliverNow(send, u, m)
+		}
+	}
+}
+
+func (s *Store) deliverNow(send Sender, u *User, m Message) {
 	id, err := s.AddNotification(u.ID, m)
 	if err != nil {
 		log.Printf("reminder for %s: %v", u.Username, err)
@@ -369,6 +428,9 @@ func (s *Store) RunEngine(ctx context.Context, send Sender) {
 			}
 		}()
 		s.DailyChecks(s.Now(), send)
+		s.Digests(s.Now(), send)
+		s.FlushPending(send)
+		s.PurgeTrash()
 		if n, err := s.RunReminders(s.Now(), send); err != nil {
 			log.Printf("reminders: %v", err)
 		} else if n > 0 {

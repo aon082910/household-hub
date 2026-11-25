@@ -34,6 +34,9 @@ type User struct {
 	WebhookURL  string `json:"webhook_url"`
 	Channels    string `json:"channels"`
 	Active      bool   `json:"active"`
+	QuietStart  int    `json:"quiet_start"` // hour 0-23, -1 = no quiet hours
+	QuietEnd    int    `json:"quiet_end"`
+	DigestHour  int    `json:"digest_hour"` // daily summary hour, -1 = off
 }
 
 // HasChannel reports whether the user turned on a delivery channel.
@@ -57,12 +60,12 @@ var (
 	dummyHash, _ = bcrypt.GenerateFromPassword([]byte("no-such-user"), bcrypt.DefaultCost)
 )
 
-const userCols = `id,username,display_name,color,role,email,phone,sms_gateway,ntfy_topic,webhook_url,channels,active`
+const userCols = `id,username,display_name,color,role,email,phone,sms_gateway,ntfy_topic,webhook_url,channels,active,quiet_start,quiet_end,digest_hour`
 
 func scanUser(r interface{ Scan(...any) error }) (*User, error) {
 	u := &User{}
 	var act int
-	err := r.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Color, &u.Role, &u.Email, &u.Phone, &u.SMSGateway, &u.NtfyTopic, &u.WebhookURL, &u.Channels, &act)
+	err := r.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Color, &u.Role, &u.Email, &u.Phone, &u.SMSGateway, &u.NtfyTopic, &u.WebhookURL, &u.Channels, &act, &u.QuietStart, &u.QuietEnd, &u.DigestHour)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -139,9 +142,15 @@ func (s *Store) UpdateProfile(u *User) error {
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return errors.New("name is required")
 	}
-	_, err := s.DB.Exec(`UPDATE users SET display_name=?,color=?,email=?,phone=?,sms_gateway=?,ntfy_topic=?,webhook_url=?,channels=? WHERE id=?`,
+	clamp := func(h int) int {
+		if h < 0 || h > 23 {
+			return -1
+		}
+		return h
+	}
+	_, err := s.DB.Exec(`UPDATE users SET display_name=?,color=?,email=?,phone=?,sms_gateway=?,ntfy_topic=?,webhook_url=?,channels=?,quiet_start=?,quiet_end=?,digest_hour=? WHERE id=?`,
 		strings.TrimSpace(u.DisplayName), u.Color, strings.TrimSpace(u.Email), strings.TrimSpace(u.Phone), strings.TrimSpace(u.SMSGateway),
-		strings.TrimSpace(u.NtfyTopic), strings.TrimSpace(u.WebhookURL), u.Channels, u.ID)
+		strings.TrimSpace(u.NtfyTopic), strings.TrimSpace(u.WebhookURL), u.Channels, clamp(u.QuietStart), clamp(u.QuietEnd), clamp(u.DigestHour), u.ID)
 	return err
 }
 

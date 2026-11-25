@@ -442,6 +442,28 @@ var migrations = []string{
 		created TEXT NOT NULL,
 		last_seen TEXT NOT NULL DEFAULT ''
 	);`,
+	// 10: quiet hours, daily summary, recently deleted
+	`ALTER TABLE users ADD COLUMN quiet_start INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE users ADD COLUMN quiet_end INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE users ADD COLUMN digest_hour INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE notifications ADD COLUMN hold_until TEXT NOT NULL DEFAULT '';
+	CREATE TABLE pending_sends (
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		notification_id INTEGER,
+		message TEXT NOT NULL,
+		due TEXT NOT NULL
+	);
+	CREATE TABLE trash (
+		id INTEGER PRIMARY KEY,
+		kind TEXT NOT NULL,
+		label TEXT NOT NULL,
+		owner_id INTEGER,
+		private INTEGER NOT NULL DEFAULT 0,
+		deleted_by INTEGER NOT NULL,
+		deleted_at TEXT NOT NULL,
+		data TEXT NOT NULL
+	);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

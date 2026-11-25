@@ -380,16 +380,14 @@ func (s *Store) GetAttachment(uid, id int64) (*Attachment, string, error) {
 }
 
 // DeleteAttachment removes a file.
+// The file stays on disk for 30 days so it can be restored from "recently deleted".
 func (s *Store) DeleteAttachment(uid, id int64) error {
-	_, full, err := s.GetAttachment(uid, id)
+	a, _, err := s.GetAttachment(uid, id)
 	if err != nil {
 		return err
 	}
-	if _, err := s.DB.Exec(`DELETE FROM attachments WHERE id=?`, id); err != nil {
-		return err
-	}
-	os.Remove(full)
-	return nil
+	return s.trashThen("file", a.Name, uid, true, uid, []partQuery{{"attachments", "id=?", []any{id}}},
+		func() error { return mustChange(s.DB.Exec(`DELETE FROM attachments WHERE id=?`, id)) })
 }
 
 // ---------- business tax report ----------

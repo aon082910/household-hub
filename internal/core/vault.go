@@ -106,11 +106,17 @@ func (s *Store) DeleteDocument(u *User, id int64) error {
 	if !s.canSeeDoc(u.ID, id) {
 		return ErrNotFound
 	}
-	atts, _ := s.ListAttachments(u.ID, nil, &id)
-	for _, a := range atts {
-		s.DeleteAttachment(u.ID, a.ID)
-	}
-	return mustChange(s.DB.Exec(`DELETE FROM documents WHERE id=?`, id))
+	var title string
+	var owner int64
+	var p int
+	s.DB.QueryRow(`SELECT title,owner_id,private FROM documents WHERE id=?`, id).Scan(&title, &owner, &p)
+	return s.trashThen("document", title, owner, p == 1, u.ID, []partQuery{
+		{"documents", "id=?", []any{id}},
+		{"attachments", "document_id=?", []any{id}},
+	}, func() error {
+		s.DB.Exec(`DELETE FROM attachments WHERE document_id=?`, id)
+		return mustChange(s.DB.Exec(`DELETE FROM documents WHERE id=?`, id))
+	})
 }
 
 // docReminders sends expiry reminders (once per document, expiry date and lead).
