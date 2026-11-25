@@ -3,6 +3,7 @@ package core
 import (
 	"database/sql"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -298,5 +299,69 @@ func TestReadEmailHTMLOnly(t *testing.T) {
 	p := ParseEmail(e, nil, nil)
 	if p == nil || p.AmountCents != -950 || p.Payee != "Café Test" || p.Ref != "6MM66666NN7777777" || !p.Confident {
 		t.Errorf("parse %+v", p)
+	}
+}
+
+func TestSeveralFoldersOneMessageOnce(t *testing.T) {
+	s, _, acc := setupFin(t)
+	m := Mailbox{Label: "Bills", Host: "imap.example.test", Username: "b@example.test", Secret: "pw", Folder: "INBOX,\n Bills , inbox", Enabled: true}
+	if err := s.SaveMailbox(&m); err != nil {
+		t.Fatal(err)
+	}
+	if got := Folders(m.Folder); len(got) != 2 || got[0] != "INBOX" || got[1] != "Bills" {
+		t.Fatalf("folders %v", got)
+	}
+	r := EmailRule{Name: "PP", FromContains: "paypal.com", Kind: "paypal", AccountID: &acc, Enabled: true}
+	s.SaveRule(&r)
+	seen := map[string]uint32{}
+	fake := func(mb Mailbox, secret string, uv, last uint32) ([]Email, uint32, uint32, error) {
+		seen[mb.Folder] = last
+		// the same receipt is in both folders (a Gmail label and the inbox)
+		return []Email{*ppEmail("<dup1>", "Receipt for your payment to Shop", "$3.00 USD\nTransaction ID: 2BB22222CC3333333")}, 5, 42, nil
+	}
+	n, err := s.ScanMailbox(m.ID, fake, nil)
+	if err != nil || n != 1 {
+		t.Fatalf("stored %d %v", n, err)
+	}
+	s.ScanMailbox(m.ID, fake, nil)
+	if seen["INBOX"] != 42 || seen["Bills"] != 42 {
+		t.Errorf("per-folder position not kept: %v", seen)
+	}
+	if txs, _ := s.ListTransactions(1, TxFilter{}); len(txs) != 1 {
+		t.Errorf("message counted %d times", len(txs))
+	}
+}
+
+func TestWatchFolder(t *testing.T) {
+	s, u, acc := setupFin(t)
+	root := t.TempDir()
+	t.Setenv("HHUB_WATCH_ROOT", root)
+	dir := filepath.Join(root, "relay")
+	os.MkdirAll(filepath.Join(dir, "2026"), 0o755)
+	os.WriteFile(filepath.Join(dir, "2026", "nov.csv"), []byte("Date,Description,Amount\n11/20/2026,TEST SHOP,-9.99\n11/21/2026,PAY,100.00\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a statement"), 0o644)
+	if err := s.SaveWatchFolder(&WatchFolder{Path: filepath.Join(root, "..", "outside"), AccountID: acc, Enabled: true}); err == nil {
+		t.Error("folder outside the root accepted")
+	}
+	w := WatchFolder{Path: "relay", AccountID: acc, Enabled: true}
+	if err := s.SaveWatchFolder(&w); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.ScanWatchFolder(w.ID, nil); err != nil || n != 2 {
+		t.Fatalf("first scan %d %v", n, err)
+	}
+	if n, _ := s.ScanWatchFolder(w.ID, nil); n != 0 {
+		t.Errorf("same file imported again: %d", n)
+	}
+	// December's file has one row that was already in November's
+	os.WriteFile(filepath.Join(dir, "dec.csv"), []byte("Date,Description,Amount\n11/21/2026,PAY,100.00\n12/01/2026,TEST SHOP,-5.00\n"), 0o644)
+	if n, _ := s.ScanWatchFolder(w.ID, nil); n != 1 {
+		t.Errorf("dec added %d", n)
+	}
+	if txs, _ := s.ListTransactions(u.ID, TxFilter{}); len(txs) != 3 {
+		t.Errorf("transactions %d", len(txs))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "2026", "nov.csv")); err != nil {
+		t.Error("watch folder moved or deleted a file")
 	}
 }

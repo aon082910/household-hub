@@ -211,6 +211,32 @@ var migrations = []string{
 		note TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX email_items_status ON email_items(status, received);`,
+	// 3: several folders per mailbox, watch folders for statement files
+	`CREATE TABLE mailbox_folders (
+		mailbox_id INTEGER NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+		folder TEXT NOT NULL,
+		uidvalidity INTEGER NOT NULL DEFAULT 0,
+		last_uid INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY(mailbox_id, folder)
+	);
+	INSERT INTO mailbox_folders(mailbox_id, folder, uidvalidity, last_uid) SELECT id, folder, uidvalidity, last_uid FROM mailboxes;
+	CREATE TABLE watch_folders (
+		id INTEGER PRIMARY KEY,
+		label TEXT NOT NULL,
+		path TEXT NOT NULL,
+		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		enabled INTEGER NOT NULL DEFAULT 1,
+		last_scan TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE watched_files (
+		watch_id INTEGER NOT NULL REFERENCES watch_folders(id) ON DELETE CASCADE,
+		sha256 TEXT NOT NULL,
+		name TEXT NOT NULL,
+		seen TEXT NOT NULL,
+		result TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY(watch_id, sha256)
+	);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

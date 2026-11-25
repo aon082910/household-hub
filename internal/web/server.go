@@ -202,6 +202,28 @@ func (sv *Server) routes() {
 		}
 		return map[string]int{"stored": n}, nil
 	})
+	adm("GET /api/mailboxes/{id}/folders", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListFolders(pathID(r))
+	})
+	adm("GET /api/watch-folders", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		ws, err := sv.Store.ListWatchFolders()
+		return map[string]any{"folders": ws, "root": core.WatchRoot()}, err
+	})
+	adm("POST /api/watch-folders", sv.saveWatch)
+	adm("PUT /api/watch-folders/{id}", sv.saveWatch)
+	adm("DELETE /api/watch-folders/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return ok(), sv.Store.DeleteWatchFolder(pathID(r))
+	})
+	adm("POST /api/watch-folders/{id}/scan", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		n, err := sv.Store.ScanWatchFolder(pathID(r), sv.Notifier)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int{"added": n}, nil
+	})
+	adm("GET /api/watch-folders/{id}/files", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListWatchedFiles(pathID(r))
+	})
 	adm("GET /api/email-rules", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListRules() })
 	adm("POST /api/email-rules", sv.saveRule)
 	adm("PUT /api/email-rules/{id}", sv.saveRule)
@@ -929,4 +951,16 @@ func (sv *Server) testRule(w http.ResponseWriter, r *http.Request, u *core.User)
 		return map[string]any{"result": "not a money email: no rule, PayPal sender or bill name matched"}, nil
 	}
 	return p, nil
+}
+
+func (sv *Server) saveWatch(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+	var x core.WatchFolder
+	if err := readJSON(r, &x); err != nil {
+		return nil, err
+	}
+	x.ID = pathID(r)
+	if err := sv.Store.SaveWatchFolder(&x); err != nil {
+		return nil, err
+	}
+	return x, nil
 }

@@ -602,7 +602,7 @@ async function alerts(el) {
 // ---------- settings ----------
 async function settings(el) {
   const tab = S.settingsTab || 'me';
-  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['email', 'Email reader'], ['backup', 'Backup']] : []);
+  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['email', 'Auto import'], ['backup', 'Backup']] : []);
   el.innerHTML = `<h1>Settings</h1><div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="setBody"></div>`;
   el.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { S.settingsTab = b.dataset.tab; settings(el); }));
   const body = $('#setBody');
@@ -830,11 +830,16 @@ async function fixItem(it, done) {
 // ---------- settings: email reader ----------
 const MAIL_HOSTS = [['imap.gmail.com', 'Gmail'], ['imap.mail.yahoo.com', 'Yahoo'], ['imap.aol.com', 'AOL'], ['imap.mail.me.com', 'iCloud']];
 async function setEmail(el) {
-  const [mbs, rules, bills] = await Promise.all([api('GET', '/api/mailboxes'), api('GET', '/api/email-rules'), api('GET', '/api/bills')]);
-  el.innerHTML = `<div class="card"><div class="spread"><h2>Mailboxes</h2><button class="primary" id="mbAdd">+ Mailbox</button></div>
+  const [mbs, rules, bills, wf] = await Promise.all([api('GET', '/api/mailboxes'), api('GET', '/api/email-rules'), api('GET', '/api/bills'), api('GET', '/api/watch-folders')]);
+  el.innerHTML = `<div class="card"><div class="spread"><h2>Statement folders</h2><button class="primary" id="wfAdd">+ Folder</button></div>
+    <p class="mute">Save statement downloads (CSV, OFX, QFX) into a folder and they import into its account by themselves every 10 minutes. Files are only read, never moved or deleted, and each file is imported once. Subfolders (2 levels) are included. ${wf.root ? `On this server the folders live inside <code>${esc(wf.root)}</code> (the "Statements folder" of the container, on Unraid normally <code>/mnt/user/appdata/household-hub/statements</code>); type a name like <code>paypal-aon</code>.` : 'Type the full folder path on this PC.'}</p>
+    <ul class="list">${wf.folders.map((w) => `<li><span class="grow"><b>${esc(w.label)}</b> &rarr; ${esc(accName(w.account_id))} ${w.enabled ? '' : '<span class="pill">off</span>'}<br>
+      <small>${esc(w.path)} &middot; ${w.files} file(s) seen &middot; ${w.last_scan ? 'checked ' + esc(new Date(w.last_scan).toLocaleString()) : 'not checked yet'}${w.last_error ? ' &middot; <span class="bad">' + esc(w.last_error) + '</span>' : ''}</small></span>
+      <button class="small" data-wscan="${w.id}">Check now</button><button class="small" data-wfiles="${w.id}">Files</button><button class="small" data-wf="${w.id}">Edit</button></li>`).join('') || '<li class="empty">No statement folder yet.</li>'}</ul></div>
+    <div class="card"><div class="spread"><h2>Mailboxes</h2><button class="primary" id="mbAdd">+ Mailbox</button></div>
     <p class="mute">The reader checks these every 10 minutes, read-only: nothing is moved, deleted or marked read. Use an <b>app password</b> (Gmail: Google Account &gt; Security &gt; 2-Step Verification &gt; App passwords). Outlook/Hotmail no longer allows app passwords: set Outlook to forward bill and bank emails to your Gmail bills address.</p>
     <ul class="list">${mbs.map((m) => `<li><span class="grow"><b>${esc(m.label)}</b> ${m.enabled ? '' : '<span class="pill">off</span>'}${m.preview ? ' <span class="pill warn">preview</span>' : ''}<br>
-      <small>${esc(m.username)} @ ${esc(m.host)} &middot; ${m.last_check ? 'checked ' + esc(new Date(m.last_check).toLocaleString()) : 'not checked yet'}${m.last_error ? ' &middot; <span class="bad">' + esc(m.last_error) + '</span>' : ''}</small></span>
+      <small>${esc(m.username)} @ ${esc(m.host)} &middot; ${esc(m.folder)} &middot; ${m.last_check ? 'checked ' + esc(new Date(m.last_check).toLocaleString()) : 'not checked yet'}${m.last_error ? ' &middot; <span class="bad">' + esc(m.last_error) + '</span>' : ''}</small></span>
       <button class="small" data-scan="${m.id}">Check now</button><button class="small" data-mb="${m.id}">Edit</button></li>`).join('') || '<li class="empty">No mailbox yet.</li>'}</ul></div>
     <div class="card"><div class="spread"><h2>Rules</h2><button class="primary" id="ruAdd">+ Rule</button></div>
     <p class="mute">Rules are tried top to bottom (lowest number first). Without a rule, PayPal emails and emails naming one of your bills (GEICO, Straight Talk...) are still recognised, but they wait in Import &gt; Email review until they know the account. Make one PayPal rule per PayPal address: "From contains" <code>paypal.com</code>, "To contains" that PayPal's email address, account = that PayPal account. Several words: separate with <code>|</code>.</p>
@@ -845,6 +850,17 @@ async function setEmail(el) {
       <div><label>From</label><input name="From" placeholder="service@paypal.com"></div><div><label>To</label><input name="To"></div>
       <div class="full"><label>Subject</label><input name="Subject"></div><div class="full"><label>Body (text or HTML)</label><textarea name="Body" rows="5"></textarea></div></div>
       <div class="actions"><button class="primary">Test</button></div><pre id="ruOut" style="white-space:pre-wrap"></pre></form>`;
+  $('#wfAdd').onclick = () => watchForm({ enabled: true, account_id: (S.accounts[0] || {}).id }, wf.root, () => setEmail(el));
+  el.querySelectorAll('[data-wf]').forEach((b) => (b.onclick = () => watchForm(wf.folders.find((w) => w.id === Number(b.dataset.wf)), wf.root, () => setEmail(el))));
+  el.querySelectorAll('[data-wscan]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Checking...';
+    try { const r = await api('POST', `/api/watch-folders/${b.dataset.wscan}/scan`); toast(`Done: ${r.added} new transaction(s)`); } catch (e) { fail(e); }
+    setEmail(el);
+  }));
+  el.querySelectorAll('[data-wfiles]').forEach((b) => (b.onclick = async () => {
+    const files = await api('GET', `/api/watch-folders/${b.dataset.wfiles}/files`).catch(fail);
+    openModal(`<div class="spread"><h2>Files seen</h2><button class="small" data-action="close">&times;</button></div><ul class="list">${(files || []).map((f) => `<li><span class="grow">${esc(f.name)}<br><small>${esc(new Date(f.seen).toLocaleString())} &middot; ${esc(f.result)}</small></span></li>`).join('') || '<li class="empty">No files yet.</li>'}</ul>`);
+  }));
   $('#mbAdd').onclick = () => mailboxForm({ host: 'imap.gmail.com', port: 993, folder: 'INBOX', enabled: true, preview: true, since_days: 60 }, () => setEmail(el));
   el.querySelectorAll('[data-mb]').forEach((b) => (b.onclick = () => mailboxForm(mbs.find((m) => m.id === Number(b.dataset.mb)), () => setEmail(el))));
   el.querySelectorAll('[data-scan]').forEach((b) => (b.onclick = async () => {
@@ -868,11 +884,25 @@ function mailboxForm(m, done) {
     <div><label>Port</label><input name="port" type="number" value="${esc(m.port || 993)}"></div>
     <div><label>Email / username</label><input name="username" value="${esc(m.username)}" autocomplete="off" required></div>
     <div><label>App password ${isNew ? '' : '(leave empty to keep)'}</label><input name="secret" type="password" autocomplete="new-password" ${isNew ? 'required' : ''} placeholder="${m.has_secret ? 'saved' : ''}"></div>
-    <div><label>Folder</label><input name="folder" value="${esc(m.folder || 'INBOX')}"></div>
+    <div class="full"><label>Folders to read (one per line or comma separated; Gmail labels count as folders)</label><textarea name="folder" rows="3">${esc((m.folder || 'INBOX').split(/\s*,\s*/).join('\n'))}</textarea>
+      ${isNew ? '<small>Save first, then use "Pick folders" to choose from a list.</small>' : '<button type="button" class="small" id="mbFolders">Pick folders</button>'}<div id="mbFolderList"></div></div>
     <div><label>First check looks back (days)</label><input name="since_days" type="number" value="${esc(m.since_days || 60)}"></div>
     <div class="full"><label class="inline"><input type="checkbox" name="enabled" ${m.enabled ? 'checked' : ''}> Check this mailbox</label>
     <label class="inline"><input type="checkbox" name="preview" ${m.preview ? 'checked' : ''}> Preview only (list what it finds in Import &gt; Email review, change nothing)</label></div></div>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="mbDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    const pick = $('#mbFolders', sh);
+    if (pick) pick.onclick = async () => {
+      pick.disabled = true; pick.textContent = 'Loading...';
+      try {
+        const list = await api('GET', `/api/mailboxes/${m.id}/folders`);
+        const cur = $('#mbForm', sh).folder.value.split(/[\n,]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+        $('#mbFolderList', sh).innerHTML = list.map((f) => `<label class="inline"><input type="checkbox" data-fold="${esc(f)}" ${cur.includes(f.toLowerCase()) ? 'checked' : ''}>${esc(f)}</label>`).join('');
+        sh.querySelectorAll('[data-fold]').forEach((c) => (c.onchange = () => {
+          $('#mbForm', sh).folder.value = [...sh.querySelectorAll('[data-fold]:checked')].map((x) => x.dataset.fold).join('\n');
+        }));
+      } catch (e) { fail(e); }
+      pick.disabled = false; pick.textContent = 'Pick folders';
+    };
     $('#mbForm', sh).onsubmit = async (e) => {
       e.preventDefault(); const d = formData(e.target);
       try { await api(isNew ? 'POST' : 'PUT', '/api/mailboxes' + (isNew ? '' : '/' + m.id), { ...d, port: Number(d.port) || 993, since_days: Number(d.since_days) || 60, auth_type: 'password' }); closeModal(); toast('Saved'); done(); } catch (err) { fail(err); }
@@ -907,6 +937,24 @@ function ruleForm(r, bills, done) {
     };
     const del = $('#ruDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete rule "' + r.name + '"?')) return; try { await api('DELETE', '/api/email-rules/' + r.id); closeModal(); done(); } catch (e) { fail(e); } };
+  });
+}
+
+function watchForm(w, root, done) {
+  const isNew = !w.id;
+  openModal(`<form id="wfForm"><h2>${isNew ? 'Add statement folder' : 'Edit statement folder'}</h2><div class="form2">
+    <div class="full"><label>Folder ${root ? '(inside ' + esc(root) + ')' : '(full path)'}</label><input name="path" value="${esc(w.path)}" required placeholder="${root ? 'paypal-aon' : 'D:\\Statements\\PayPal AON'}"></div>
+    <div><label>Name</label><input name="label" value="${esc(w.label)}"></div>
+    <div><label>Import into account</label><select name="account_id">${opts(S.accounts.map((a) => [a.id, a.name]), w.account_id)}</select></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="enabled" ${w.enabled ? 'checked' : ''}> Check this folder</label></div></div>
+    <p class="mute">Tip: import one file by hand first (Import page) if the columns need fixing; the folder then uses the same columns.</p>
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="wfDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    $('#wfForm', sh).onsubmit = async (e) => {
+      e.preventDefault(); const d = formData(e.target);
+      try { await api(isNew ? 'POST' : 'PUT', '/api/watch-folders' + (isNew ? '' : '/' + w.id), { ...d, account_id: Number(d.account_id) }); closeModal(); toast('Saved'); done(); } catch (err) { fail(err); }
+    };
+    const del = $('#wfDel', sh);
+    if (del) del.onclick = async () => { if (!confirm('Stop watching this folder? Files and what they added stay.')) return; try { await api('DELETE', '/api/watch-folders/' + w.id); closeModal(); done(); } catch (e) { fail(e); } };
   });
 }
 

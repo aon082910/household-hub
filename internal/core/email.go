@@ -128,9 +128,7 @@ func (s *Store) SaveMailbox(m *Mailbox) error {
 	if m.Port == 0 {
 		m.Port = 993
 	}
-	if m.Folder == "" {
-		m.Folder = "INBOX"
-	}
+	m.Folder = strings.Join(Folders(m.Folder), ", ")
 	if m.AuthType == "" {
 		m.AuthType = "password"
 	}
@@ -152,11 +150,10 @@ func (s *Store) SaveMailbox(m *Mailbox) error {
 	}
 	var old Mailbox
 	s.DB.QueryRow(`SELECT host,username,folder FROM mailboxes WHERE id=?`, m.ID).Scan(&old.Host, &old.Username, &old.Folder)
-	reset := ""
-	if old.Host != m.Host || !strings.EqualFold(old.Username, m.Username) || old.Folder != m.Folder {
-		reset = ", uidvalidity=0, last_uid=0" // another mailbox: start over
+	if old.Host != m.Host || !strings.EqualFold(old.Username, m.Username) {
+		s.DB.Exec(`DELETE FROM mailbox_folders WHERE mailbox_id=?`, m.ID) // another mailbox: start over
 	}
-	q := `UPDATE mailboxes SET label=?,host=?,port=?,username=?,auth_type=?,folder=?,enabled=?,preview=?,since_days=?` + reset
+	q := `UPDATE mailboxes SET label=?,host=?,port=?,username=?,auth_type=?,folder=?,enabled=?,preview=?,since_days=?`
 	args := []any{m.Label, m.Host, m.Port, m.Username, m.AuthType, m.Folder, b2i(m.Enabled), b2i(m.Preview), m.SinceDays}
 	if m.Secret != "" && m.Secret != Mask {
 		q += `,secret=?`
@@ -708,42 +705,74 @@ func (s *Store) ResolveEmailItem(uid, id int64, action string, fix EmailItem, ca
 // MailFetcher reads new messages from a mailbox (IMAP in production, a fake in tests).
 type MailFetcher func(m Mailbox, secret string, uidValidity, lastUID uint32) (msgs []Email, newValidity, newLast uint32, err error)
 
-// ScanMailbox checks one mailbox and processes its new money emails. It returns how many items it stored.
+// Folders splits the folder setting ("INBOX, Bills, [Gmail]/All Mail" or one per line) into a clean list.
+func Folders(setting string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range strings.FieldsFunc(setting, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' }) {
+		f = strings.TrimSpace(f)
+		if f != "" && !seen[strings.ToLower(f)] {
+			seen[strings.ToLower(f)] = true
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"INBOX"}
+	}
+	return out
+}
+
+// ScanMailbox checks every folder of one mailbox and processes new money emails. A message that sits in two
+// folders (a Gmail label and All Mail) is handled once. It returns how many items it stored.
 func (s *Store) ScanMailbox(id int64, fetch MailFetcher, send Sender) (int, error) {
 	var m Mailbox
-	var uv, lu int64
-	row := s.DB.QueryRow(`SELECT `+mbCols+`,uidvalidity,last_uid FROM mailboxes WHERE id=?`, id)
+	row := s.DB.QueryRow(`SELECT `+mbCols+` FROM mailboxes WHERE id=?`, id)
 	var hs, en, pv int
-	if err := row.Scan(&m.ID, &m.Label, &m.Host, &m.Port, &m.Username, &hs, &m.AuthType, &m.Folder, &en, &pv, &m.SinceDays, &m.LastCheck, &m.LastError, &uv, &lu); err != nil {
+	if err := row.Scan(&m.ID, &m.Label, &m.Host, &m.Port, &m.Username, &hs, &m.AuthType, &m.Folder, &en, &pv, &m.SinceDays, &m.LastCheck, &m.LastError); err != nil {
 		return 0, ErrNotFound
 	}
 	m.Enabled, m.Preview = en == 1, pv == 1
-	msgs, nv, nl, err := fetch(m, s.mailboxSecret(id), uint32(uv), uint32(lu))
-	now := s.nowStr()
-	if err != nil {
-		s.DB.Exec(`UPDATE mailboxes SET last_check=?, last_error=? WHERE id=?`, now, trunc(err.Error(), 300), id)
-		return 0, err
-	}
-	sort.Slice(msgs, func(i, j int) bool { return msgs[i].Date.Before(msgs[j].Date) })
+	secret := s.mailboxSecret(id)
 	stored, review := 0, 0
-	for i := range msgs {
-		it, err := s.ProcessEmail(id, m.Preview, &msgs[i], send)
+	var errs []string
+	for _, folder := range Folders(m.Folder) {
+		var uv, lu int64
+		s.DB.QueryRow(`SELECT uidvalidity,last_uid FROM mailbox_folders WHERE mailbox_id=? AND folder=?`, id, folder).Scan(&uv, &lu)
+		fm := m
+		fm.Folder = folder
+		msgs, nv, nl, err := fetch(fm, secret, uint32(uv), uint32(lu))
 		if err != nil {
-			log.Printf("email %q: %v", msgs[i].Subject, err)
+			errs = append(errs, folder+": "+err.Error())
+			if strings.Contains(err.Error(), "sign-in failed") || strings.Contains(err.Error(), "connect ") {
+				break // the same for every folder
+			}
 			continue
 		}
-		if it != nil {
-			stored++
-			if it.Status == "review" {
-				review++
+		sort.Slice(msgs, func(i, j int) bool { return msgs[i].Date.Before(msgs[j].Date) })
+		for i := range msgs {
+			it, err := s.ProcessEmail(id, m.Preview, &msgs[i], send)
+			if err != nil {
+				log.Printf("email %q: %v", msgs[i].Subject, err)
+				continue
+			}
+			if it != nil {
+				stored++
+				if it.Status == "review" {
+					review++
+				}
 			}
 		}
+		s.DB.Exec(`INSERT INTO mailbox_folders(mailbox_id,folder,uidvalidity,last_uid) VALUES(?,?,?,?)
+			ON CONFLICT(mailbox_id,folder) DO UPDATE SET uidvalidity=excluded.uidvalidity, last_uid=excluded.last_uid`, id, folder, nv, nl)
 	}
-	s.DB.Exec(`UPDATE mailboxes SET last_check=?, last_error='', uidvalidity=?, last_uid=? WHERE id=?`, now, nv, nl, id)
+	s.DB.Exec(`UPDATE mailboxes SET last_check=?, last_error=? WHERE id=?`, s.nowStr(), trunc(strings.Join(errs, "; "), 500), id)
 	if review > 0 && send != nil {
 		if u, err := s.GetUser(s.firstAdmin()); err == nil {
 			s.notify(send, u, Message{Title: fmt.Sprintf("%d money email(s) need a look", review), Body: "Open Import > Email review in Household Hub."})
 		}
+	}
+	if len(errs) > 0 && stored == 0 {
+		return 0, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return stored, nil
 }
