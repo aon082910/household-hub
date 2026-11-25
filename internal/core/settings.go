@@ -7,24 +7,24 @@ const Mask = "********"
 
 // SettingKeys lists the household settings and their defaults. Keys ending in a secret name are masked.
 var SettingKeys = map[string]string{
-	"household_name":    "Our Household",
-	"currency":          "$",
-	"bill_remind_hour":  "9",
+	"household_name":     "Our Household",
+	"currency":           "$",
+	"bill_remind_hour":   "9",
 	"allday_remind_hour": "8",
-	"week_start":        "0", // 0 = Sunday, 1 = Monday
-	"base_url":          "",
-	"ntfy_server":       "https://ntfy.sh",
-	"ntfy_token":        "",
-	"smtp_host":         "",
-	"smtp_port":         "587",
-	"smtp_user":         "",
-	"smtp_pass":         "",
-	"smtp_from":         "",
-	"twilio_sid":        "",
-	"twilio_token":      "",
-	"twilio_from":       "",
-	"household_webhook": "",
-	"overdue_reminders": "1",
+	"week_start":         "0", // 0 = Sunday, 1 = Monday
+	"base_url":           "",
+	"ntfy_server":        "https://ntfy.sh",
+	"ntfy_token":         "",
+	"smtp_host":          "",
+	"smtp_port":          "587",
+	"smtp_user":          "",
+	"smtp_pass":          "",
+	"smtp_from":          "",
+	"twilio_sid":         "",
+	"twilio_token":       "",
+	"twilio_from":        "",
+	"household_webhook":  "",
+	"overdue_reminders":  "1",
 }
 
 func isSecret(k string) bool {

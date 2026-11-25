@@ -1,4 +1,4 @@
-// hhub is the Household Hub program.
+﻿// hhub is the Household Hub program.
 //
 //	hhub serve [--addr :8080] [--data /data]   the server (Docker/Unraid, or by hand)
 //	hhub background                            Windows: hosts the data (host mode) and/or shows Windows notifications
@@ -28,7 +28,7 @@ import (
 	"hhub/internal/web"
 )
 
-var version = "1.0.0"
+var version = "1.1.0"
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
@@ -75,6 +75,7 @@ func startServer(ctx context.Context, addr, dataDir string) (*http.Server, *core
 	}
 	n := core.NewNotifier(store)
 	go store.RunEngine(ctx, n)
+	go store.RunMailEngine(ctx, n)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		store.Close()

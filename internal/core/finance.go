@@ -45,6 +45,9 @@ type Transaction struct {
 	UserID      int64  `json:"user_id"`
 	Private     bool   `json:"private"`
 	BillID      *int64 `json:"bill_id"`
+	ExternalID  string `json:"external_id"` // bank or PayPal transaction id (dedupe key)
+	Source      string `json:"source"`      // manual, import, email, autopay
+	Transfer    bool   `json:"transfer"`    // money moved between own accounts: left out of income, spending and budgets
 }
 
 // Bill is a recurring (or one-time) payment with a due date.
@@ -214,7 +217,7 @@ type TxFilter struct {
 
 // ListTransactions returns visible transactions, newest first.
 func (s *Store) ListTransactions(uid int64, f TxFilter) ([]Transaction, error) {
-	q := `SELECT id,date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id FROM transactions WHERE (private=0 OR user_id=?)`
+	q := `SELECT id,date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,external_id,source,transfer FROM transactions WHERE (private=0 OR user_id=?)`
 	args := []any{uid}
 	if f.From != "" {
 		q += ` AND date>=?`
@@ -251,11 +254,11 @@ func (s *Store) ListTransactions(uid int64, f TxFilter) ([]Transaction, error) {
 	for rows.Next() {
 		var t Transaction
 		var acc, cat, bill sql.NullInt64
-		var p int
-		if err := rows.Scan(&t.ID, &t.Date, &t.AmountCents, &acc, &cat, &t.Payee, &t.Notes, &t.UserID, &p, &bill); err != nil {
+		var p, tr int
+		if err := rows.Scan(&t.ID, &t.Date, &t.AmountCents, &acc, &cat, &t.Payee, &t.Notes, &t.UserID, &p, &bill, &t.ExternalID, &t.Source, &tr); err != nil {
 			return nil, err
 		}
-		t.AccountID, t.CategoryID, t.BillID, t.Private = idPtr(acc), idPtr(cat), idPtr(bill), p == 1
+		t.AccountID, t.CategoryID, t.BillID, t.Private, t.Transfer = idPtr(acc), idPtr(cat), idPtr(bill), p == 1, tr == 1
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -270,16 +273,19 @@ func (s *Store) SaveTransaction(uid int64, t *Transaction) error {
 		return errors.New("amount is required")
 	}
 	if t.ID == 0 {
-		res, err := s.DB.Exec(`INSERT INTO transactions(date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,created) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, uid, b2i(t.Private), nullID(t.BillID), s.nowStr())
+		if t.Source == "" {
+			t.Source = "manual"
+		}
+		res, err := s.DB.Exec(`INSERT INTO transactions(date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,created,external_id,source,transfer) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, uid, b2i(t.Private), nullID(t.BillID), s.nowStr(), t.ExternalID, t.Source, b2i(t.Transfer))
 		if err == nil {
 			t.ID, _ = res.LastInsertId()
 			t.UserID = uid
 		}
 		return err
 	}
-	return mustChange(s.DB.Exec(`UPDATE transactions SET date=?,amount_cents=?,account_id=?,category_id=?,payee=?,notes=?,private=? WHERE id=? AND (private=0 OR user_id=?)`,
-		t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, b2i(t.Private), t.ID, uid))
+	return mustChange(s.DB.Exec(`UPDATE transactions SET date=?,amount_cents=?,account_id=?,category_id=?,payee=?,notes=?,private=?,transfer=? WHERE id=? AND (private=0 OR user_id=?)`,
+		t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, b2i(t.Private), b2i(t.Transfer), t.ID, uid))
 }
 
 // DeleteTransaction removes a transaction (and un-pays a bill it paid).
@@ -426,6 +432,19 @@ func (s *Store) BillDues(uid int64, from, to time.Time) ([]BillDue, error) {
 
 // PayBill marks one due date paid. With record=true it also adds the expense transaction.
 func (s *Store) PayBill(uid, billID int64, occ, paidDate string, amount int64, record bool) error {
+	return s.payBill(uid, billID, occ, paidDate, amount, record, "manual", 0)
+}
+
+// LinkBillPayment marks a due date paid by an existing (imported or emailed) transaction.
+func (s *Store) LinkBillPayment(uid, billID int64, occ, paidDate string, amount, txID int64) error {
+	if err := s.payBill(uid, billID, occ, paidDate, amount, false, "", txID); err != nil {
+		return err
+	}
+	_, err := s.DB.Exec(`UPDATE transactions SET bill_id=? WHERE id=?`, billID, txID)
+	return err
+}
+
+func (s *Store) payBill(uid, billID int64, occ, paidDate string, amount int64, record bool, source string, linkTx int64) error {
 	b, err := s.GetBill(uid, billID)
 	if err != nil {
 		return err
@@ -439,15 +458,18 @@ func (s *Store) PayBill(uid, billID int64, occ, paidDate string, amount int64, r
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var txID any
+	if linkTx != 0 {
+		txID = linkTx
+	}
 	if record && amount != 0 {
-		t := Transaction{Date: paidDate, AmountCents: -abs(amount), AccountID: b.AccountID, CategoryID: b.CategoryID, Payee: b.Name, Notes: "Bill due " + occ, Private: b.Private, BillID: &b.ID}
+		t := Transaction{Date: paidDate, AmountCents: -abs(amount), AccountID: b.AccountID, CategoryID: b.CategoryID, Payee: b.Name, Notes: "Bill due " + occ, Private: b.Private, BillID: &b.ID, Source: source}
 		if err := s.SaveTransaction(uid, &t); err != nil {
 			return err
 		}
 		txID = t.ID
 	}
 	_, err = s.DB.Exec(`INSERT INTO bill_payments(bill_id,occ_date,paid_date,amount_cents,user_id,transaction_id) VALUES(?,?,?,?,?,?)
-		ON CONFLICT(bill_id,occ_date) DO UPDATE SET paid_date=excluded.paid_date, amount_cents=excluded.amount_cents`, b.ID, occ, paidDate, abs(amount), uid, txID)
+		ON CONFLICT(bill_id,occ_date) DO UPDATE SET paid_date=excluded.paid_date, amount_cents=excluded.amount_cents, transaction_id=COALESCE(excluded.transaction_id, transaction_id)`, b.ID, occ, paidDate, abs(amount), uid, txID)
 	return err
 }
 
@@ -459,7 +481,9 @@ func (s *Store) UnpayBill(uid, billID int64, occ string) error {
 	var tx sql.NullInt64
 	s.DB.QueryRow(`SELECT transaction_id FROM bill_payments WHERE bill_id=? AND occ_date=?`, billID, occ).Scan(&tx)
 	if tx.Valid {
-		s.DB.Exec(`DELETE FROM transactions WHERE id=?`, tx.Int64)
+		// remove the expense only if paying created it; an imported or emailed charge stays and is just unlinked
+		s.DB.Exec(`DELETE FROM transactions WHERE id=? AND source IN ('manual','autopay') AND bill_id=?`, tx.Int64, billID)
+		s.DB.Exec(`UPDATE transactions SET bill_id=NULL WHERE id=? AND bill_id=?`, tx.Int64, billID)
 	}
 	return mustChange(s.DB.Exec(`DELETE FROM bill_payments WHERE bill_id=? AND occ_date=?`, billID, occ))
 }
@@ -504,7 +528,7 @@ func (s *Store) Summary(uid int64, month string) (MonthSummary, error) {
 		return ms, err
 	}
 	spent := map[int64]int64{}
-	rows, err := s.DB.Query(`SELECT category_id, SUM(amount_cents) FROM transactions WHERE date>=? AND date<=? AND (private=0 OR user_id=?) GROUP BY category_id`,
+	rows, err := s.DB.Query(`SELECT category_id, SUM(amount_cents) FROM transactions WHERE date>=? AND date<=? AND transfer=0 AND (private=0 OR user_id=?) GROUP BY category_id`,
 		start.Format(DateFmt), end.Format(DateFmt), uid)
 	if err != nil {
 		return ms, err
@@ -521,7 +545,7 @@ func (s *Store) Summary(uid int64, month string) (MonthSummary, error) {
 	}
 	rows.Close()
 	s.DB.QueryRow(`SELECT COALESCE(SUM(CASE WHEN amount_cents>0 THEN amount_cents END),0), COALESCE(SUM(CASE WHEN amount_cents<0 THEN -amount_cents END),0)
-		FROM transactions WHERE date>=? AND date<=? AND (private=0 OR user_id=?)`, start.Format(DateFmt), end.Format(DateFmt), uid).Scan(&ms.IncomeCents, &ms.ExpenseCents)
+		FROM transactions WHERE date>=? AND date<=? AND transfer=0 AND (private=0 OR user_id=?)`, start.Format(DateFmt), end.Format(DateFmt), uid).Scan(&ms.IncomeCents, &ms.ExpenseCents)
 	for _, c := range cats {
 		cs := CategorySpend{Category: c, SpentCents: spent[c.ID]}
 		if c.Kind == "expense" {

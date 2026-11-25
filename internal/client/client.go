@@ -142,8 +142,8 @@ func PollOnce(show func(title, body string) error) int {
 	c := Load()
 	cl := &http.Client{Timeout: 15 * time.Second}
 	shown := 0
-	latest := map[string]int64{}   // token -> newest alert id seen
-	revoked := map[string]bool{}   // token -> the server no longer accepts it
+	latest := map[string]int64{} // token -> newest alert id seen
+	revoked := map[string]bool{} // token -> the server no longer accepts it
 	for _, d := range c.Devices {
 		if d.Server != c.Server() {
 			continue

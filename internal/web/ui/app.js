@@ -142,6 +142,7 @@ async function boot() {
   $('#whoName').textContent = S.me.display_name;
   document.querySelectorAll('#nav .fin').forEach((a) => a.classList.toggle('hidden', !canFin()));
   setBadge(st.unread);
+  reviewBadge();
   registerWindowDevice();
   route();
   clearInterval(boot.poll); boot.poll = setInterval(poll, 30000);
@@ -172,6 +173,7 @@ async function poll() {
     const st = await api('GET', '/api/state');
     if (!st.user) return;
     setBadge(st.unread);
+    reviewBadge();
     if (st.latest_notification > S.latest) {
       const r = await api('GET', '/api/notifications?after=' + S.latest);
       S.latest = st.latest_notification;
@@ -195,14 +197,14 @@ document.addEventListener('click', async (e) => {
 function route() {
   if (!S.me) return;
   let [v, q] = (location.hash.slice(1) || 'dashboard').split('?');
-  const views = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings };
-  if (!views[v] || (!canFin() && ['bills', 'money', 'budget', 'accounts'].includes(v))) v = 'dashboard';
+  const views = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings, import: importView };
+  if (!views[v] || (!canFin() && ['bills', 'money', 'budget', 'accounts', 'import'].includes(v))) v = 'dashboard';
   S.view = v; S.query = new URLSearchParams(q || '');
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === v));
   loadRefs().catch(() => {}).then(render); // members, categories and accounts may have changed on another device
 }
 async function render() {
-  const fn = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings }[S.view];
+  const fn = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings, import: importView }[S.view];
   try { await fn($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 window.addEventListener('hashchange', route);
@@ -479,7 +481,7 @@ async function moneyView(el) {
       <a class="btn" href="/api/transactions.csv?${qs}" download>Export CSV</a></div></div>
     <div class="stats"><div class="stat"><small>In</small><b class="good">${money(inc)}</b></div><div class="stat"><small>Out</small><b>${money(out)}</b></div><div class="stat"><small>Net</small><b class="${inc - out < 0 ? 'bad' : 'good'}">${money(inc - out, true)}</b></div></div>
     <div class="card scroll"><table><tr><th>Date</th><th>Payee</th><th>Category</th><th>Account</th><th>By</th><th class="num">Amount</th></tr>
-    ${txs.map((t) => `<tr class="click" data-tx="${t.id}"><td>${esc(fmtDate(t.date, { month: 'short', day: 'numeric' }))}</td><td>${esc(t.payee)} ${t.private ? '<span class="pill">private</span>' : ''}${t.bill_id ? ' <span class="pill">bill</span>' : ''}<br><small>${esc(t.notes)}</small></td>
+    ${txs.map((t) => `<tr class="click" data-tx="${t.id}"><td>${esc(fmtDate(t.date, { month: 'short', day: 'numeric' }))}</td><td>${esc(t.payee)} ${t.private ? '<span class="pill">private</span>' : ''}${t.bill_id ? ' <span class="pill">bill</span>' : ''}${t.transfer ? ' <span class="pill">transfer</span>' : ''}${t.source && t.source !== 'manual' ? ` <span class="pill">${esc(t.source)}</span>` : ''}<br><small>${esc(t.notes)}</small></td>
       <td>${esc(catName(t.category_id))}</td><td>${esc(accName(t.account_id))}</td><td>${esc(userName(t.user_id))}</td><td class="num ${t.amount_cents > 0 ? 'good' : ''}">${money(t.amount_cents, true)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No transactions this month.</td></tr>'}</table></div>`;
   const shift = (n) => { S.txMonth = new Date(S.txMonth.getFullYear(), S.txMonth.getMonth() + n, 1); moneyView(el); };
   $('#mPrev').onclick = () => shift(-1); $('#mNext').onclick = () => shift(1);
@@ -499,13 +501,14 @@ function txForm(t) {
     <div><label>Category</label><select name="category_id">${opts(S.cats.map((c) => [c.id, c.name + (c.kind === 'income' ? ' (income)' : '')]), t.category_id, '-')}</select></div>
     <div><label>Account</label><select name="account_id">${opts(S.accounts.filter((a) => !a.archived || a.id === t.account_id).map((a) => [a.id, a.name]), t.account_id ?? (S.accounts[0] || {}).id, '-')}</select></div>
     <div class="full"><label>Notes</label><input name="notes" value="${esc(t.notes)}"></div>
-    <div class="full"><label class="inline"><input type="checkbox" name="private" ${t.private ? 'checked' : ''}> Private (only me)</label></div></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="private" ${t.private ? 'checked' : ''}> Private (only me)</label>
+    <label class="inline"><input type="checkbox" name="transfer" ${t.transfer ? 'checked' : ''}> Transfer between my own accounts (not income or spending)</label></div></div>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="txDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#txForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
       try {
         let c = Math.abs(toCents(d.amount)); if (d.type === 'expense') c = -c;
-        await api(isNew ? 'POST' : 'PUT', '/api/transactions' + (isNew ? '' : '/' + t.id), { date: d.date, amount_cents: c, payee: d.payee, category_id: idOrNull(d.category_id), account_id: idOrNull(d.account_id), notes: d.notes, private: d.private });
+        await api(isNew ? 'POST' : 'PUT', '/api/transactions' + (isNew ? '' : '/' + t.id), { date: d.date, amount_cents: c, payee: d.payee, category_id: idOrNull(d.category_id), account_id: idOrNull(d.account_id), notes: d.notes, private: d.private, transfer: d.transfer });
         closeModal(); toast('Saved'); S.accounts = await api('GET', '/api/accounts'); render();
       } catch (err) { fail(err); }
     };
@@ -599,11 +602,11 @@ async function alerts(el) {
 // ---------- settings ----------
 async function settings(el) {
   const tab = S.settingsTab || 'me';
-  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['backup', 'Backup']] : []);
+  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['email', 'Email reader'], ['backup', 'Backup']] : []);
   el.innerHTML = `<h1>Settings</h1><div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="setBody"></div>`;
   el.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { S.settingsTab = b.dataset.tab; settings(el); }));
   const body = $('#setBody');
-  await ({ me: setMe, notify: setNotify, members: setMembers, household: setHousehold, backup: setBackup }[tab])(body);
+  await ({ me: setMe, notify: setNotify, members: setMembers, household: setHousehold, email: setEmail, backup: setBackup }[tab])(body);
 }
 async function setMe(el) {
   const me = await api('GET', '/api/me');
@@ -704,6 +707,207 @@ async function setHousehold(el) {
 async function setBackup(el) {
   el.innerHTML = `<div class="card"><h2>Backup</h2><p>Download a copy of everything (one SQLite file). On Unraid the data also lives in the app's appdata folder, which your usual appdata backup covers.</p>
     <a class="btn primary" href="/api/backup" download>Download backup</a><h3>Restore</h3><p class="mute">Stop the app, replace <code>household.db</code> in the data folder with the backup file (delete any household.db-wal and -shm files next to it), then start the app.</p></div>`;
+}
+
+// ---------- import: statements + email review ----------
+async function reviewBadge() {
+  if (!canFin()) return;
+  try {
+    const items = await api('GET', '/api/email-items?status=review');
+    const b = $('#ibadge'); b.textContent = items.length; b.classList.toggle('hidden', !items.length);
+  } catch (_) { /* ignore */ }
+}
+const KIND_TEXT = { paypal: 'PayPal', transaction: 'Bank / card', bill_notice: 'Bill amount', bill_paid: 'Bill paid', ignore: 'Ignore' };
+const STATUS_PILL = { review: 'warn', preview: '', added: 'good', matched: 'good', duplicate: '', applied: 'good', ignored: '' };
+
+async function importView(el) {
+  const tab = S.importTab || 'file';
+  el.innerHTML = `<h1>Import</h1><div class="tabs">${[['file', 'Statement file'], ['review', 'Email review'], ['history', 'Email history']].map(([k, t]) => `<button data-itab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="impBody"></div>`;
+  el.querySelectorAll('[data-itab]').forEach((b) => (b.onclick = () => { S.importTab = b.dataset.itab; importView(el); }));
+  const body = $('#impBody');
+  if (tab === 'file') return importFile(body);
+  return emailItems(body, tab === 'review' ? 'open' : '');
+}
+
+function importFile(el) {
+  const accs = S.accounts.filter((a) => !a.archived);
+  el.innerHTML = `<div class="card"><h2>Upload a statement</h2>
+    <p class="mute">Download a CSV, OFX or QFX file from your bank or PayPal (PayPal: Activity &gt; Statements &gt; Activity report, CSV). Rows you already have are skipped, so importing the same file twice is safe.</p>
+    <div class="form2"><div><label>Into account</label><select id="impAcc">${opts(accs.map((a) => [a.id, a.name]), S.impAcc || (accs[0] || {}).id)}</select></div>
+    <div><label>File</label><input type="file" id="impFile" accept=".csv,.ofx,.qfx,.txt"></div></div>
+    <div class="actions"><button class="primary" id="impPrev">Preview</button></div></div><div id="impResult"></div>`;
+  if (!accs.length) { $('#impResult').innerHTML = '<div class="card warn">Add an account first (Accounts page), for example "PayPal 1", "PayPal 2" and "Relay".</div>'; return; }
+  $('#impAcc').onchange = (e) => (S.impAcc = e.target.value);
+  $('#impPrev').onclick = () => runImport(false);
+}
+
+async function sendImport(commit, mapping) {
+  const f = $('#impFile').files[0]; if (!f) throw new Error('Choose a file');
+  const fd = new FormData(); fd.append('file', f); fd.append('account_id', $('#impAcc').value);
+  if (mapping) fd.append('mapping', JSON.stringify(mapping));
+  const r = await fetch('/api/import/' + (commit ? 'commit' : 'preview'), { method: 'POST', headers: { 'X-HHub': '1' }, body: fd, credentials: 'same-origin' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+  return d;
+}
+
+async function runImport(commit, mapping) {
+  const out = $('#impResult');
+  try {
+    if (commit) {
+      const d = await sendImport(true, mapping);
+      const c = d.counts || {};
+      out.innerHTML = `<div class="card"><h2>Imported</h2><p><b>${c.added || 0}</b> added, ${c.matched || 0} matched to entries you already had, ${c.duplicate || 0} already imported, ${c.skip || 0} skipped.</p><a href="#money">See them in Money</a></div>`;
+      S.accounts = await api('GET', '/api/accounts');
+      return;
+    }
+    const d = await sendImport(false, mapping);
+    S.impMapping = d.mapping;
+    const c = d.counts || {};
+    const col = (k) => (d.format === 'csv' ? `<div><label>${k[1]}</label><select data-map="${k[0]}">${opts([[-1, '(none)']].concat((d.headers || []).map((h, i) => [i, h || 'column ' + (i + 1)])), d.mapping[k[0]])}</select></div>` : '');
+    out.innerHTML = `<div class="card"><div class="spread"><h2>Preview: ${d.total} rows (${esc(d.format.toUpperCase())}${d.mapping && d.mapping.profile === 'paypal' ? ', PayPal' : ''})</h2>
+      <div class="row"><span class="pill good">${c.new || 0} new</span><span class="pill">${c.duplicate || 0} already there</span><span class="pill">${c.match || 0} match existing</span><span class="pill">${c.skip || 0} skipped</span></div></div>
+      ${d.format === 'csv' ? `<details><summary>Columns (fix them if the preview looks wrong)</summary><div class="form2">
+        ${[['date', 'Date'], ['amount', 'Amount (+/-)'], ['debit', 'Money out'], ['credit', 'Money in'], ['payee', 'Payee / name'], ['description', 'Notes'], ['id', 'Transaction ID'], ['status', 'Status'], ['type', 'Type']].map(col).join('')}
+        <div><label>&nbsp;</label><label class="inline"><input type="checkbox" id="mapInv" ${d.mapping.invert ? 'checked' : ''}> Spending shows as positive numbers</label></div></div>
+        <div class="actions"><button id="mapApply">Use these columns</button></div></details>` : ''}
+      <div class="scroll" style="max-height:55vh;overflow:auto"><table><tr><th>Date</th><th>Payee</th><th class="num">Amount</th><th></th></tr>
+      ${d.rows.map((r) => `<tr><td>${esc(r.date)}</td><td>${esc(r.payee)}<br><small>${esc(r.notes)}</small></td><td class="num ${r.amount_cents > 0 ? 'good' : ''}">${money(r.amount_cents, true)}</td>
+        <td>${r.skip ? `<span class="pill">skip: ${esc(r.skip)}</span>` : r.status === 'new' ? '<span class="pill good">new</span>' : `<span class="pill">${esc(r.status)}</span>`}${r.transfer ? ' <span class="pill">transfer</span>' : ''}</td></tr>`).join('')}</table></div>
+      <div class="actions"><button class="primary" id="impGo" ${c.new ? '' : 'disabled'}>Import ${c.new || 0} new</button></div></div>`;
+    const ap = $('#mapApply');
+    if (ap) ap.onclick = () => {
+      const m = { ...S.impMapping };
+      out.querySelectorAll('[data-map]').forEach((s) => (m[s.dataset.map] = Number(s.value)));
+      m.invert = $('#mapInv').checked;
+      runImport(false, m);
+    };
+    $('#impGo').onclick = () => runImport(true, d.format === 'csv' ? S.impMapping : undefined);
+  } catch (e) { out.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+
+async function emailItems(el, status) {
+  const items = await api('GET', '/api/email-items?status=' + status);
+  el.innerHTML = `<div class="card">${status === 'open'
+    ? '<p class="mute">Emails the reader was not sure about (or mailboxes still in preview mode). Fix and add them, or ignore them. Admins set up mailboxes and rules in Settings &gt; Email reader.</p>'
+    : '<p class="mute">Last 300 money emails and what the reader did with them.</p>'}
+    <div class="scroll"><table><tr><th>Received</th><th>Email</th><th>Found</th><th class="num">Amount</th><th></th></tr>
+    ${items.map((it) => `<tr><td>${esc(new Date(it.received).toLocaleDateString())}</td><td><b>${esc(it.subject)}</b><br><small>${esc(it.sender)}${it.recipient ? ' &rarr; ' + esc(it.recipient) : ''}</small></td>
+      <td>${esc(KIND_TEXT[it.kind] || it.kind)}: ${esc(it.payee || '?')}${it.account_id ? ' &middot; ' + esc(accName(it.account_id)) : ''}${it.due_date ? ' &middot; due ' + esc(it.due_date) : ''}<br><small>${esc(it.note)}</small></td>
+      <td class="num">${it.amount_cents ? money(it.amount_cents, it.kind === 'paypal' || it.kind === 'transaction') : ''}</td>
+      <td><span class="pill ${STATUS_PILL[it.status] || ''}">${esc(it.status)}</span>${it.status === 'review' || it.status === 'preview' ? `<br><button class="small primary" data-fix="${it.id}">Add</button> <button class="small" data-ign="${it.id}">Ignore</button>` : ''}</td></tr>`).join('') || `<tr><td colspan="5" class="empty">${status === 'open' ? 'Nothing waiting.' : 'No money emails read yet.'}</td></tr>`}</table></div></div>`;
+  el.querySelectorAll('[data-ign]').forEach((b) => (b.onclick = async () => { try { await api('POST', '/api/email-items/' + b.dataset.ign, { action: 'ignore' }); reviewBadge(); emailItems(el, status); } catch (e) { fail(e); } }));
+  el.querySelectorAll('[data-fix]').forEach((b) => (b.onclick = () => fixItem(items.find((x) => x.id === Number(b.dataset.fix)), () => emailItems(el, status))));
+}
+
+async function fixItem(it, done) {
+  const bills = await api('GET', '/api/bills');
+  const isTx = (k) => k === 'paypal' || k === 'transaction';
+  openModal(`<form id="fixForm"><h2>Add from email</h2><p class="mute">${esc(it.subject)}</p><div class="form2">
+    <div><label>What is it?</label><select name="kind">${opts(Object.entries(KIND_TEXT).filter(([k]) => k !== 'ignore'), it.kind)}</select></div>
+    <div><label>Amount (negative = money out)</label><input name="amount" value="${esc(it.amount_cents ? (it.amount_cents / 100).toFixed(2) : '')}"></div>
+    <div class="txf"><label>Payee</label><input name="payee" value="${esc(it.payee)}"></div>
+    <div class="txf"><label>Account</label><select name="account_id">${opts(S.accounts.map((a) => [a.id, a.name]), it.account_id, '-')}</select></div>
+    <div class="txf"><label>Category</label><select name="category_id">${opts(S.cats.map((c) => [c.id, c.name]), '', '(learn from payee)')}</select></div>
+    <div class="bf"><label>Bill</label><select name="bill_id">${opts(bills.map((b) => [b.id, b.name]), it.bill_id, '-')}</select></div></div>
+    <p class="mute">Tip: to handle emails like this by themselves next time, add a rule in Settings &gt; Email reader.</p>
+    <div class="actions"><button type="button" data-action="close">Cancel</button><button class="primary">Add</button></div></form>`, (sh) => {
+    const f = $('#fixForm', sh);
+    const sync = () => { const tx = isTx(f.kind.value); sh.querySelectorAll('.txf').forEach((x) => x.classList.toggle('hidden', !tx)); sh.querySelectorAll('.bf').forEach((x) => x.classList.toggle('hidden', tx)); };
+    f.kind.onchange = sync; sync();
+    f.onsubmit = async (e) => {
+      e.preventDefault(); const d = formData(f);
+      try {
+        let amt = toCents(d.amount);
+        if (!isTx(d.kind)) amt = Math.abs(amt);
+        await api('POST', '/api/email-items/' + it.id, { action: 'apply', kind: d.kind, amount_cents: amt, payee: d.payee, account_id: idOrNull(d.account_id), category_id: idOrNull(d.category_id), bill_id: idOrNull(d.bill_id) });
+        closeModal(); toast('Added'); reviewBadge(); done();
+      } catch (err) { fail(err); }
+    };
+  });
+}
+
+// ---------- settings: email reader ----------
+const MAIL_HOSTS = [['imap.gmail.com', 'Gmail'], ['imap.mail.yahoo.com', 'Yahoo'], ['imap.aol.com', 'AOL'], ['imap.mail.me.com', 'iCloud']];
+async function setEmail(el) {
+  const [mbs, rules, bills] = await Promise.all([api('GET', '/api/mailboxes'), api('GET', '/api/email-rules'), api('GET', '/api/bills')]);
+  el.innerHTML = `<div class="card"><div class="spread"><h2>Mailboxes</h2><button class="primary" id="mbAdd">+ Mailbox</button></div>
+    <p class="mute">The reader checks these every 10 minutes, read-only: nothing is moved, deleted or marked read. Use an <b>app password</b> (Gmail: Google Account &gt; Security &gt; 2-Step Verification &gt; App passwords). Outlook/Hotmail no longer allows app passwords: set Outlook to forward bill and bank emails to your Gmail bills address.</p>
+    <ul class="list">${mbs.map((m) => `<li><span class="grow"><b>${esc(m.label)}</b> ${m.enabled ? '' : '<span class="pill">off</span>'}${m.preview ? ' <span class="pill warn">preview</span>' : ''}<br>
+      <small>${esc(m.username)} @ ${esc(m.host)} &middot; ${m.last_check ? 'checked ' + esc(new Date(m.last_check).toLocaleString()) : 'not checked yet'}${m.last_error ? ' &middot; <span class="bad">' + esc(m.last_error) + '</span>' : ''}</small></span>
+      <button class="small" data-scan="${m.id}">Check now</button><button class="small" data-mb="${m.id}">Edit</button></li>`).join('') || '<li class="empty">No mailbox yet.</li>'}</ul></div>
+    <div class="card"><div class="spread"><h2>Rules</h2><button class="primary" id="ruAdd">+ Rule</button></div>
+    <p class="mute">Rules are tried top to bottom (lowest number first). Without a rule, PayPal emails and emails naming one of your bills (GEICO, Straight Talk...) are still recognised, but they wait in Import &gt; Email review until they know the account. Make one PayPal rule per PayPal address: "From contains" <code>paypal.com</code>, "To contains" that PayPal's email address, account = that PayPal account. Several words: separate with <code>|</code>.</p>
+    <div class="scroll"><table><tr><th>#</th><th>Name</th><th>When</th><th>Does</th><th></th></tr>${rules.map((r) => `<tr><td>${r.priority}</td><td>${esc(r.name)}${r.enabled ? '' : ' <span class="pill">off</span>'}</td>
+      <td><small>${[['from', r.from_contains], ['to', r.to_contains], ['subject', r.subject_contains], ['body', r.body_contains]].filter((x) => x[1]).map((x) => esc(x[0] + ' has "' + x[1] + '"')).join(', ')}</small></td>
+      <td><small>${esc(KIND_TEXT[r.kind])}${r.account_id ? ' &rarr; ' + esc(accName(r.account_id)) : ''}${r.bill_id ? ' &rarr; ' + esc((bills.find((b) => b.id === r.bill_id) || {}).name || '') : ''}</small></td><td><button class="small" data-ru="${r.id}">Edit</button></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No rules yet.</td></tr>'}</table></div></div>
+    <form class="card" id="ruTest"><h2>Test with an email</h2><p class="mute">Paste an email you got (or type a made-up one) to see what the reader would do. Nothing is saved.</p><div class="form2">
+      <div><label>From</label><input name="From" placeholder="service@paypal.com"></div><div><label>To</label><input name="To"></div>
+      <div class="full"><label>Subject</label><input name="Subject"></div><div class="full"><label>Body (text or HTML)</label><textarea name="Body" rows="5"></textarea></div></div>
+      <div class="actions"><button class="primary">Test</button></div><pre id="ruOut" style="white-space:pre-wrap"></pre></form>`;
+  $('#mbAdd').onclick = () => mailboxForm({ host: 'imap.gmail.com', port: 993, folder: 'INBOX', enabled: true, preview: true, since_days: 60 }, () => setEmail(el));
+  el.querySelectorAll('[data-mb]').forEach((b) => (b.onclick = () => mailboxForm(mbs.find((m) => m.id === Number(b.dataset.mb)), () => setEmail(el))));
+  el.querySelectorAll('[data-scan]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true; b.textContent = 'Checking...';
+    try { const r = await api('POST', `/api/mailboxes/${b.dataset.scan}/scan`); toast(`Done: ${r.stored} money email(s) found`); reviewBadge(); } catch (e) { fail(e); }
+    setEmail(el);
+  }));
+  $('#ruAdd').onclick = () => ruleForm({ kind: 'paypal', from_contains: 'paypal.com', direction: 'auto', priority: 100, enabled: true }, bills, () => setEmail(el));
+  el.querySelectorAll('[data-ru]').forEach((b) => (b.onclick = () => ruleForm(rules.find((r) => r.id === Number(b.dataset.ru)), bills, () => setEmail(el))));
+  $('#ruTest').onsubmit = async (e) => {
+    e.preventDefault();
+    try { const r = await api('POST', '/api/email-rules/test', formData(e.target)); $('#ruOut').textContent = JSON.stringify(r, null, 2); } catch (err) { fail(err); }
+  };
+}
+
+function mailboxForm(m, done) {
+  const isNew = !m.id;
+  openModal(`<form id="mbForm"><h2>${isNew ? 'Add mailbox' : 'Edit mailbox'}</h2><div class="form2">
+    <div class="full"><label>Name</label><input name="label" value="${esc(m.label)}" placeholder="Bills Gmail"></div>
+    <div><label>IMAP server</label><input name="host" value="${esc(m.host)}" list="mailHosts" required><datalist id="mailHosts">${MAIL_HOSTS.map((h) => `<option value="${h[0]}">${h[1]}</option>`).join('')}</datalist></div>
+    <div><label>Port</label><input name="port" type="number" value="${esc(m.port || 993)}"></div>
+    <div><label>Email / username</label><input name="username" value="${esc(m.username)}" autocomplete="off" required></div>
+    <div><label>App password ${isNew ? '' : '(leave empty to keep)'}</label><input name="secret" type="password" autocomplete="new-password" ${isNew ? 'required' : ''} placeholder="${m.has_secret ? 'saved' : ''}"></div>
+    <div><label>Folder</label><input name="folder" value="${esc(m.folder || 'INBOX')}"></div>
+    <div><label>First check looks back (days)</label><input name="since_days" type="number" value="${esc(m.since_days || 60)}"></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="enabled" ${m.enabled ? 'checked' : ''}> Check this mailbox</label>
+    <label class="inline"><input type="checkbox" name="preview" ${m.preview ? 'checked' : ''}> Preview only (list what it finds in Import &gt; Email review, change nothing)</label></div></div>
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="mbDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    $('#mbForm', sh).onsubmit = async (e) => {
+      e.preventDefault(); const d = formData(e.target);
+      try { await api(isNew ? 'POST' : 'PUT', '/api/mailboxes' + (isNew ? '' : '/' + m.id), { ...d, port: Number(d.port) || 993, since_days: Number(d.since_days) || 60, auth_type: 'password' }); closeModal(); toast('Saved'); done(); } catch (err) { fail(err); }
+    };
+    const del = $('#mbDel', sh);
+    if (del) del.onclick = async () => { if (!confirm('Remove this mailbox? Its saved app password is deleted; what it already added stays.')) return; try { await api('DELETE', '/api/mailboxes/' + m.id); closeModal(); done(); } catch (e) { fail(e); } };
+  });
+}
+
+function ruleForm(r, bills, done) {
+  const isNew = !r.id;
+  openModal(`<form id="ruForm"><h2>${isNew ? 'New rule' : 'Edit rule'}</h2><div class="form2">
+    <div class="full"><label>Name</label><input name="name" value="${esc(r.name)}" required placeholder="PayPal 1, Relay alerts, GEICO..."></div>
+    <div><label>From contains</label><input name="from_contains" value="${esc(r.from_contains)}"></div>
+    <div><label>To contains</label><input name="to_contains" value="${esc(r.to_contains)}" placeholder="the PayPal account's email"></div>
+    <div><label>Subject contains</label><input name="subject_contains" value="${esc(r.subject_contains)}"></div>
+    <div><label>Body contains</label><input name="body_contains" value="${esc(r.body_contains)}"></div>
+    <div><label>What it is</label><select name="kind">${opts(Object.entries(KIND_TEXT), r.kind)}</select></div>
+    <div><label>Money direction</label><select name="direction">${opts([['auto', 'Work it out'], ['out', 'Always money out'], ['in', 'Always money in']], r.direction)}</select></div>
+    <div><label>Account</label><select name="account_id">${opts(S.accounts.map((a) => [a.id, a.name]), r.account_id, '-')}</select></div>
+    <div><label>Category</label><select name="category_id">${opts(S.cats.map((c) => [c.id, c.name]), r.category_id, '(learn from payee)')}</select></div>
+    <div><label>Bill (for bill emails)</label><select name="bill_id">${opts(bills.map((b) => [b.id, b.name]), r.bill_id, '(match by name)')}</select></div>
+    <div><label>Order (lower runs first)</label><input name="priority" type="number" value="${esc(r.priority || 100)}"></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="enabled" ${r.enabled ? 'checked' : ''}> On</label></div></div>
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="ruDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    $('#ruForm', sh).onsubmit = async (e) => {
+      e.preventDefault(); const d = formData(e.target);
+      try {
+        await api(isNew ? 'POST' : 'PUT', '/api/email-rules' + (isNew ? '' : '/' + r.id), { ...d, priority: Number(d.priority) || 100, account_id: idOrNull(d.account_id), category_id: idOrNull(d.category_id), bill_id: idOrNull(d.bill_id) });
+        closeModal(); toast('Saved'); done();
+      } catch (err) { fail(err); }
+    };
+    const del = $('#ruDel', sh);
+    if (del) del.onclick = async () => { if (!confirm('Delete rule "' + r.name + '"?')) return; try { await api('DELETE', '/api/email-rules/' + r.id); closeModal(); done(); } catch (e) { fail(e); } };
+  });
 }
 
 boot();

@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -127,6 +128,44 @@ func TestSetupLoginRolesAndCSRF(t *testing.T) {
 	_, set := c.do(c.c, "GET", "/api/settings", nil, nil)
 	if set["smtp_pass"] != core.Mask {
 		t.Error("secret leaked", set["smtp_pass"])
+	}
+	// mailbox secrets never come back, kids cannot see the email queue
+	if code, _ := c.do(c.c, "POST", "/api/mailboxes", map[string]any{"label": "Bills", "host": "imap.example.test", "username": "b@example.test", "secret": "app-pass-1234", "enabled": false}, nil); code != 200 {
+		t.Error("add mailbox", code)
+	}
+	req, _ := http.NewRequest("GET", c.srv.URL+"/api/mailboxes", nil)
+	resp0, _ := c.c.Do(req)
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(resp0.Body)
+	resp0.Body.Close()
+	if strings.Contains(buf.String(), "app-pass") || !strings.Contains(buf.String(), `"has_secret":true`) {
+		t.Error("mailbox secret leaked:", buf.String())
+	}
+	if code, _ := c.do(kid, "GET", "/api/email-items", nil, nil); code != 403 {
+		t.Error("kid read email items", code)
+	}
+	// statement upload (multipart) needs the X-HHub header too
+	var mp bytes.Buffer
+	mw := multipart.NewWriter(&mp)
+	mw.WriteField("account_id", "1")
+	fw, _ := mw.CreateFormFile("file", "s.csv")
+	fw.Write([]byte("Date,Description,Amount\n11/20/2026,TEST SHOP,-9.99\n"))
+	mw.Close()
+	for _, hdr := range []string{"1", ""} {
+		req, _ := http.NewRequest("POST", c.srv.URL+"/api/import/preview", bytes.NewReader(mp.Bytes()))
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		if hdr != "" {
+			req.Header.Set("X-HHub", hdr)
+		}
+		resp, _ := c.c.Do(req)
+		want := 200
+		if hdr == "" {
+			want = 403
+		}
+		if resp.StatusCode != want {
+			t.Errorf("import preview with header %q: %d", hdr, resp.StatusCode)
+		}
+		resp.Body.Close()
 	}
 	// ICS feed
 	_, ics := c.do(c.c, "GET", "/api/me/ics", nil, nil)

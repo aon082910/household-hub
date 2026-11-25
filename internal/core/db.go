@@ -148,6 +148,69 @@ var migrations = []string{
 		sent TEXT NOT NULL,
 		PRIMARY KEY(kind, item_id, occ, lead, user_id)
 	);`,
+	// 2: statement import and email reader
+	`ALTER TABLE transactions ADD COLUMN external_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+	ALTER TABLE transactions ADD COLUMN transfer INTEGER NOT NULL DEFAULT 0;
+	CREATE UNIQUE INDEX tx_ext ON transactions(account_id, external_id) WHERE external_id <> '';
+	CREATE INDEX tx_acc_date ON transactions(account_id, date);
+	CREATE TABLE import_profiles (
+		account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+		mapping TEXT NOT NULL
+	);
+	CREATE TABLE mailboxes (
+		id INTEGER PRIMARY KEY,
+		label TEXT NOT NULL,
+		host TEXT NOT NULL,
+		port INTEGER NOT NULL DEFAULT 993,
+		username TEXT NOT NULL,
+		secret TEXT NOT NULL DEFAULT '',
+		auth_type TEXT NOT NULL DEFAULT 'password',
+		folder TEXT NOT NULL DEFAULT 'INBOX',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		preview INTEGER NOT NULL DEFAULT 1,
+		since_days INTEGER NOT NULL DEFAULT 60,
+		uidvalidity INTEGER NOT NULL DEFAULT 0,
+		last_uid INTEGER NOT NULL DEFAULT 0,
+		last_check TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE email_rules (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		from_contains TEXT NOT NULL DEFAULT '',
+		to_contains TEXT NOT NULL DEFAULT '',
+		subject_contains TEXT NOT NULL DEFAULT '',
+		body_contains TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL DEFAULT 'transaction',
+		account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+		category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+		bill_id INTEGER REFERENCES bills(id) ON DELETE SET NULL,
+		direction TEXT NOT NULL DEFAULT 'auto',
+		priority INTEGER NOT NULL DEFAULT 100,
+		enabled INTEGER NOT NULL DEFAULT 1
+	);
+	CREATE TABLE email_items (
+		id INTEGER PRIMARY KEY,
+		mailbox_id INTEGER,
+		message_id TEXT NOT NULL UNIQUE,
+		received TEXT NOT NULL,
+		sender TEXT NOT NULL DEFAULT '',
+		recipient TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		rule_id INTEGER,
+		kind TEXT NOT NULL DEFAULT '',
+		amount_cents INTEGER NOT NULL DEFAULT 0,
+		payee TEXT NOT NULL DEFAULT '',
+		ref TEXT NOT NULL DEFAULT '',
+		due_date TEXT NOT NULL DEFAULT '',
+		account_id INTEGER,
+		bill_id INTEGER,
+		status TEXT NOT NULL,
+		transaction_id INTEGER,
+		note TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX email_items_status ON email_items(status, received);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

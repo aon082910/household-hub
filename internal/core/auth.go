@@ -252,7 +252,9 @@ func (s *Store) SessionUser(token string) (*User, string, error) {
 }
 
 // EndSession deletes one token.
-func (s *Store) EndSession(token string) { s.DB.Exec(`DELETE FROM sessions WHERE token_hash=?`, hashToken(token)) }
+func (s *Store) EndSession(token string) {
+	s.DB.Exec(`DELETE FROM sessions WHERE token_hash=?`, hashToken(token))
+}
 
 // Device is a registered notifier (a Windows PC) shown so the user can revoke it.
 type Device struct {

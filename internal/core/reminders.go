@@ -259,7 +259,7 @@ func (s *Store) RunReminders(now time.Time, send Sender) (int, error) {
 			// autopay: mark it paid (and record the expense) once the due day has come
 			if b.Autopay && !due.After(today) {
 				if s.claim("autopay", b.ID, occ, "", 0) {
-					if err := s.PayBill(b.OwnerID, b.ID, occ, occ, b.AmountCents, true); err != nil {
+					if err := s.payBill(b.OwnerID, b.ID, occ, occ, b.AmountCents, true, "autopay", 0); err != nil {
 						log.Printf("autopay %s %s: %v", b.Name, occ, err)
 					}
 				}

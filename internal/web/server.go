@@ -31,6 +31,7 @@ type Server struct {
 	Store    *core.Store
 	Notifier *core.Notifier
 	Version  string
+	Fetch    core.MailFetcher // reads mailboxes (IMAP; tests swap it)
 	mux      *http.ServeMux
 
 	failMu sync.Mutex
@@ -39,7 +40,7 @@ type Server struct {
 
 // New builds the server and its routes.
 func New(s *core.Store, n *core.Notifier, version string) *Server {
-	sv := &Server{Store: s, Notifier: n, Version: version, mux: http.NewServeMux(), fails: map[string][]time.Time{}}
+	sv := &Server{Store: s, Notifier: n, Version: version, Fetch: core.IMAPFetch, mux: http.NewServeMux(), fails: map[string][]time.Time{}}
 	sv.routes()
 	return sv
 }
@@ -91,7 +92,9 @@ func (sv *Server) routes() {
 	user("PUT /api/me", sv.saveMe)
 	user("POST /api/me/password", sv.myPassword)
 	user("POST /api/me/test-notify", sv.testNotify)
-	user("GET /api/me/devices", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListDevices(u.ID) })
+	user("GET /api/me/devices", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListDevices(u.ID)
+	})
 	user("POST /api/me/devices", sv.newDevice)
 	user("DELETE /api/me/devices/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		return ok(), sv.Store.RevokeDevice(u.ID, r.PathValue("id"))
@@ -107,7 +110,9 @@ func (sv *Server) routes() {
 	user("GET /api/users", sv.listUsers)
 	adm("POST /api/users", sv.addUser)
 	adm("PUT /api/users/{id}", sv.editUser)
-	adm("GET /api/settings", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.Settings(true), nil })
+	adm("GET /api/settings", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.Settings(true), nil
+	})
 	adm("PUT /api/settings", sv.saveSettings)
 	adm("GET /api/backup", sv.backup)
 
@@ -136,13 +141,17 @@ func (sv *Server) routes() {
 		}
 		return sv.Store.Summary(u.ID, month)
 	})
-	fin("GET /api/accounts", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListAccounts(u.ID) })
+	fin("GET /api/accounts", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListAccounts(u.ID)
+	})
 	fin("POST /api/accounts", sv.saveAccount)
 	fin("PUT /api/accounts/{id}", sv.saveAccount)
 	fin("DELETE /api/accounts/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		return ok(), sv.Store.DeleteAccount(u.ID, pathID(r))
 	})
-	fin("GET /api/categories", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListCategories() })
+	fin("GET /api/categories", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListCategories()
+	})
 	fin("POST /api/categories", sv.saveCategory)
 	fin("PUT /api/categories/{id}", sv.saveCategory)
 	fin("DELETE /api/categories/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
@@ -157,7 +166,9 @@ func (sv *Server) routes() {
 	fin("DELETE /api/transactions/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		return ok(), sv.Store.DeleteTransaction(u.ID, pathID(r))
 	})
-	fin("GET /api/bills", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListBills(u.ID) })
+	fin("GET /api/bills", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListBills(u.ID)
+	})
 	fin("GET /api/bills/dues", sv.billDues)
 	fin("POST /api/bills", sv.saveBill)
 	fin("PUT /api/bills/{id}", sv.saveBill)
@@ -165,6 +176,39 @@ func (sv *Server) routes() {
 		return ok(), sv.Store.DeleteBill(u.ID, pathID(r))
 	})
 	fin("POST /api/bills/{id}/pay", sv.payBill)
+	// statement import and email reader
+	fin("POST /api/import/preview", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.importFile(r, u, false)
+	})
+	fin("POST /api/import/commit", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.importFile(r, u, true)
+	})
+	fin("GET /api/email-items", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListEmailItems(r.URL.Query().Get("status"), 300)
+	})
+	fin("POST /api/email-items/{id}", sv.resolveEmail)
+	adm("GET /api/mailboxes", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListMailboxes()
+	})
+	adm("POST /api/mailboxes", sv.saveMailbox)
+	adm("PUT /api/mailboxes/{id}", sv.saveMailbox)
+	adm("DELETE /api/mailboxes/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return ok(), sv.Store.DeleteMailbox(pathID(r))
+	})
+	adm("POST /api/mailboxes/{id}/scan", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		n, err := sv.Store.ScanMailbox(pathID(r), sv.Fetch, sv.Notifier)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int{"stored": n}, nil
+	})
+	adm("GET /api/email-rules", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListRules() })
+	adm("POST /api/email-rules", sv.saveRule)
+	adm("PUT /api/email-rules/{id}", sv.saveRule)
+	adm("DELETE /api/email-rules/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return ok(), sv.Store.DeleteRule(pathID(r))
+	})
+	adm("POST /api/email-rules/test", sv.testRule)
 	fin("POST /api/bills/{id}/unpay", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		var in struct{ Occ string }
 		if err := readJSON(r, &in); err != nil {
@@ -764,4 +808,125 @@ func (sv *Server) payBill(w http.ResponseWriter, r *http.Request, u *core.User) 
 		return nil, bad("occ must be YYYY-MM-DD")
 	}
 	return ok(), sv.Store.PayBill(u.ID, pathID(r), in.Occ, in.PaidDate, in.AmountCents, in.Record)
+}
+
+// ---------- import / email ----------
+
+func (sv *Server) importFile(r *http.Request, u *core.User, commit bool) (any, error) {
+	r.Body = http.MaxBytesReader(nil, r.Body, 21<<20)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		return nil, bad("upload failed (max 20 MB): " + err.Error())
+	}
+	acc, _ := strconv.ParseInt(r.FormValue("account_id"), 10, 64)
+	accs, err := sv.Store.ListAccounts(u.ID)
+	if err != nil {
+		return nil, err
+	}
+	found := false
+	for _, a := range accs {
+		found = found || a.ID == acc
+	}
+	if !found {
+		return nil, bad("pick an account")
+	}
+	f, _, err := r.FormFile("file")
+	if err != nil {
+		return nil, bad("choose a file")
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 20<<20))
+	if err != nil {
+		return nil, err
+	}
+	var m *core.Mapping
+	if js := r.FormValue("mapping"); js != "" {
+		m = &core.Mapping{}
+		if err := json.Unmarshal([]byte(js), m); err != nil {
+			return nil, bad("bad column mapping")
+		}
+	} else {
+		m = sv.Store.LoadMapping(acc)
+	}
+	p, err := core.ParseStatement(data, m)
+	if err != nil && m != nil { // a saved mapping from another bank's file: guess again
+		p, err = core.ParseStatement(data, nil)
+	}
+	if err != nil {
+		return nil, bad(err.Error())
+	}
+	if commit {
+		counts, err := sv.Store.CommitImport(u.ID, acc, p, r.FormValue("private") == "1")
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"counts": counts}, nil
+	}
+	counts := sv.Store.PreviewImport(acc, p)
+	rows := p.Rows
+	if len(rows) > 1500 {
+		rows = rows[:1500]
+	}
+	return map[string]any{"format": p.Format, "headers": p.Headers, "mapping": p.Mapping, "rows": rows, "counts": counts, "total": len(p.Rows)}, nil
+}
+
+func (sv *Server) resolveEmail(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+	var in struct {
+		Action      string `json:"action"`
+		Kind        string `json:"kind"`
+		AmountCents int64  `json:"amount_cents"`
+		Payee       string `json:"payee"`
+		AccountID   *int64 `json:"account_id"`
+		BillID      *int64 `json:"bill_id"`
+		CategoryID  *int64 `json:"category_id"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		return nil, err
+	}
+	return sv.Store.ResolveEmailItem(u.ID, pathID(r), in.Action, core.EmailItem{Kind: in.Kind, AmountCents: in.AmountCents, Payee: in.Payee, AccountID: in.AccountID, BillID: in.BillID}, in.CategoryID, sv.Notifier)
+}
+
+func (sv *Server) saveMailbox(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+	var m core.Mailbox
+	if err := readJSON(r, &m); err != nil {
+		return nil, err
+	}
+	m.ID = pathID(r)
+	if err := sv.Store.SaveMailbox(&m); err != nil {
+		return nil, err
+	}
+	m.Secret = ""
+	return m, nil
+}
+
+func (sv *Server) saveRule(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+	var x core.EmailRule
+	if err := readJSON(r, &x); err != nil {
+		return nil, err
+	}
+	x.ID = pathID(r)
+	if err := sv.Store.SaveRule(&x); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+func (sv *Server) testRule(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+	var in struct{ From, To, Subject, Body string }
+	if err := readJSON(r, &in); err != nil {
+		return nil, err
+	}
+	body := in.Body
+	if strings.Contains(body, "</") {
+		body = core.HTMLToText(body)
+	}
+	rules, err := sv.Store.ListRules()
+	if err != nil {
+		return nil, err
+	}
+	bills, _ := sv.Store.ListBills(0)
+	p := core.ParseEmail(&core.Email{From: in.From, To: in.To, Subject: in.Subject, Body: body}, rules, bills)
+	if p == nil {
+		return map[string]any{"result": "not a money email: no rule, PayPal sender or bill name matched"}, nil
+	}
+	return p, nil
 }
