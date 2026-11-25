@@ -16,7 +16,7 @@ Windows modes (chosen on first start, changeable in Settings > My profile > Chan
 ## Features
 
 - Members with roles: admin (everything), adult (money + calendar), kid (calendar only). Any item can be private (only its owner sees it).
-- Bills: one-time, daily, weekly, monthly, yearly, every N; month-end dates clamp (31st becomes Feb 28). Mark paid (optionally records the expense), undo, autopay (marks itself paid on the due day), payment website link, assigned person.
+- Bills: one-time, daily, weekly, monthly, yearly, every N; month-end dates clamp (31st becomes Feb 28). Mark paid (optionally records the expense, and can move the next due date; later dates follow it), undo, autopay (marks itself paid on the due day), payment website link, assigned person.
 - Money: accounts with running balance, transactions in/out, categories, CSV export.
 - Budget: monthly budget per category with progress bars.
 - Calendar: month grid and 60-day list, repeats, multi-day events, who it is for (colors per person), reminders (at start, 15 min ... 1 week, custom). Bill due dates appear on it. Private `.ics` feed per person for phone/Outlook calendars.

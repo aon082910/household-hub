@@ -459,13 +459,22 @@ func (s *Store) BillDues(uid int64, from, to time.Time) ([]BillDue, error) {
 		if err != nil {
 			continue
 		}
+		seen := map[string]bool{}
 		for _, t := range Occurrences(st, b.Freq, b.Interval, b.Until, from, to) {
 			d := BillDue{BillID: b.ID, Name: b.Name, Date: t.Format(DateFmt), AmountCents: b.AmountCents, Autopay: b.Autopay, AssignedTo: b.AssignedTo, URL: b.URL}
 			if p, ok := paid[b.ID][d.Date]; ok {
 				d.Paid, d.PaidDate, d.PaidCents = true, p[0].(string), p[1].(int64)
 			}
 			d.Overdue = !d.Paid && d.Date < today
+			seen[d.Date] = true
 			out = append(out, d)
+		}
+		// payments made before the due dates were moved (RescheduleBill) keep showing as paid
+		for occ, p := range paid[b.ID] {
+			if !seen[occ] && occ < b.StartDate {
+				out = append(out, BillDue{BillID: b.ID, Name: b.Name, Date: occ, AmountCents: b.AmountCents, Autopay: b.Autopay, AssignedTo: b.AssignedTo, URL: b.URL,
+					Paid: true, PaidDate: p[0].(string), PaidCents: p[1].(int64)})
+			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -518,6 +527,26 @@ func (s *Store) payBill(uid, billID int64, occ, paidDate string, amount int64, r
 	_, err = s.DB.Exec(`INSERT INTO bill_payments(bill_id,occ_date,paid_date,amount_cents,user_id,transaction_id) VALUES(?,?,?,?,?,?)
 		ON CONFLICT(bill_id,occ_date) DO UPDATE SET paid_date=excluded.paid_date, amount_cents=excluded.amount_cents, transaction_id=COALESCE(excluded.transaction_id, transaction_id)`, b.ID, occ, paidDate, abs(amount), uid, txID)
 	return err
+}
+
+// RescheduleBill moves a bill's due dates after the paid due date occ: the next one becomes nextDue and later
+// ones follow the bill's repeat from there (a monthly bill moved to the 20th stays on the 20th). Payments
+// already made keep showing in the history.
+func (s *Store) RescheduleBill(uid, billID int64, occ, nextDue string) error {
+	if _, err := time.Parse(DateFmt, nextDue); err != nil {
+		return errors.New("next due date must be YYYY-MM-DD")
+	}
+	if nextDue <= occ {
+		return errors.New("next due date must be after the due date that was paid")
+	}
+	b, err := s.GetBill(uid, billID)
+	if err != nil {
+		return err
+	}
+	if b.Until != "" && b.Until < nextDue {
+		b.Until = nextDue
+	}
+	return mustChange(s.DB.Exec(`UPDATE bills SET start_date=?, until=? WHERE id=? AND `+visible, nextDue, b.Until, billID, uid))
 }
 
 // UnpayBill clears a payment and deletes the transaction it created.

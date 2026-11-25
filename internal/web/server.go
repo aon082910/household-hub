@@ -910,6 +910,7 @@ func (sv *Server) payBill(w http.ResponseWriter, r *http.Request, u *core.User) 
 		PaidDate    string `json:"paid_date"`
 		AmountCents int64  `json:"amount_cents"`
 		Record      bool   `json:"record"`
+		NextDue     string `json:"next_due"` // optional: move the following due dates
 	}
 	if err := readJSON(r, &in); err != nil {
 		return nil, err
@@ -917,7 +918,20 @@ func (sv *Server) payBill(w http.ResponseWriter, r *http.Request, u *core.User) 
 	if _, err := time.Parse(core.DateFmt, in.Occ); err != nil {
 		return nil, bad("occ must be YYYY-MM-DD")
 	}
-	return ok(), sv.Store.PayBill(u.ID, pathID(r), in.Occ, in.PaidDate, in.AmountCents, in.Record)
+	if in.NextDue != "" {
+		if _, err := time.Parse(core.DateFmt, in.NextDue); err != nil || in.NextDue <= in.Occ {
+			return nil, bad("next due date must be after " + in.Occ)
+		}
+	}
+	if err := sv.Store.PayBill(u.ID, pathID(r), in.Occ, in.PaidDate, in.AmountCents, in.Record); err != nil {
+		return nil, err
+	}
+	if in.NextDue != "" {
+		if err := sv.Store.RescheduleBill(u.ID, pathID(r), in.Occ, in.NextDue); err != nil {
+			return nil, err
+		}
+	}
+	return ok(), nil
 }
 
 // ---------- import / email ----------

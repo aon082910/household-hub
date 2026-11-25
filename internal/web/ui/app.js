@@ -464,14 +464,22 @@ async function payForm(id, occ) {
     });
     return;
   }
+  // the next scheduled due date, offered so it can be moved while paying
+  const after = new Date(occ + 'T00:00'); after.setDate(after.getDate() + 1);
+  const later = new Date(after); later.setDate(later.getDate() + 400);
+  let next = '';
+  try { next = ((await api('GET', `/api/bills/dues?from=${ymd(after)}&to=${ymd(later)}`)).find((x) => x.bill_id === id) || {}).date || ''; } catch (e) { /* leave empty */ }
   openModal(`<form id="payForm"><h2>Pay ${esc(d.name)}</h2><p class="mute">Due ${esc(fmtDate(occ))}</p><div class="form2">
     <div><label>Amount paid</label><input name="amount" inputmode="decimal" value="${esc(centsInput(d.amount_cents))}"></div>
     <div><label>Paid on</label><input type="date" name="paid_date" value="${ymd(new Date())}"></div>
+    <div><label>Next due date</label><input type="date" name="next_due" min="${esc(ymd(after))}" value="${esc(next)}"></div>
+    <div><label>&nbsp;</label><small class="mute">${next ? 'Change it to move this bill\'s due dates; later ones follow the new date.' : 'No more due dates. Pick one to add the next.'}</small></div>
     <div class="full"><label class="inline"><input type="checkbox" name="record" checked> Also record it as an expense</label></div></div>
     <div class="actions"><button type="button" data-action="close">Cancel</button><button class="primary">Mark paid</button></div></form>`, (sh) => {
     $('#payForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const f = formData(ev.target);
-      try { await api('POST', `/api/bills/${id}/pay`, { occ, paid_date: f.paid_date, amount_cents: toCents(f.amount), record: f.record }); closeModal(); toast('Marked paid'); S.accounts = await api('GET', '/api/accounts'); render(); } catch (e) { fail(e); }
+      const moved = f.next_due && f.next_due !== next;
+      try { await api('POST', `/api/bills/${id}/pay`, { occ, paid_date: f.paid_date, amount_cents: toCents(f.amount), record: f.record, next_due: moved ? f.next_due : '' }); closeModal(); toast(moved ? 'Marked paid, next due ' + fmtDate(f.next_due) : 'Marked paid'); S.accounts = await api('GET', '/api/accounts'); render(); } catch (e) { fail(e); }
     };
   });
 }

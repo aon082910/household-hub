@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -239,6 +240,30 @@ func TestBillPayAndDues(t *testing.T) {
 	}
 	if txs, _ := s.ListTransactions(mom.ID, TxFilter{}); len(txs) != 0 {
 		t.Error("unpay left the transaction")
+	}
+}
+
+func TestRescheduleOnPay(t *testing.T) {
+	s := newStore(t)
+	s.Now = func() time.Time { return at("2026-11-20T10:00") }
+	mom, _ := s.CreateUser("mom", "Mom", "password1", RoleAdmin, "")
+	b := Bill{Name: "Phone", AmountCents: 4500, StartDate: "2026-01-05", Freq: "monthly"}
+	s.SaveBill(mom.ID, &b)
+	s.PayBill(mom.ID, b.ID, "2026-11-05", "2026-11-18", 0, false)
+	if err := s.RescheduleBill(mom.ID, b.ID, "2026-11-05", "2026-11-05"); err == nil {
+		t.Error("same date accepted")
+	}
+	if err := s.RescheduleBill(mom.ID, b.ID, "2026-11-05", "2026-12-18"); err != nil {
+		t.Fatal(err)
+	}
+	dues, _ := s.BillDues(mom.ID, at("2026-10-01"), at("2027-01-31"))
+	got := []string{}
+	for _, d := range dues {
+		got = append(got, d.Date+map[bool]string{true: " paid", false: ""}[d.Paid])
+	}
+	want := "[2026-11-05 paid 2026-12-18 2027-01-18]"
+	if fmt.Sprint(got) != want {
+		t.Errorf("dues %v, want %s", got, want)
 	}
 }
 
