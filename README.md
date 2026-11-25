@@ -50,6 +50,6 @@ docker run -d --name household-hub -p 8095:8080 -e TZ=America/New_York \
 ```
 Open `http://<server>:8095/` and create the first (admin) account.
 
-**Windows:** build with `.uild.ps1 -Install`, then open Household Hub from the Start Menu.
+**Windows:** build with `.\build.ps1 -Install`, then open Household Hub from the Start Menu.
 
 Image: [allornothing/household-hub](https://hub.docker.com/r/allornothing/household-hub) · MIT licensed.
