@@ -478,6 +478,43 @@ var migrations = []string{
 	);
 	CREATE INDEX trips_date ON trips(date);
 	INSERT OR IGNORE INTO categories(name,kind,tax_line) VALUES ('Estimated tax payments','expense','');`,
+	// 12: shared costs between members, rollover budgets, yearly costs, statement checks
+	`CREATE TABLE owes (
+		id INTEGER PRIMARY KEY,
+		date TEXT NOT NULL,
+		description TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		paid_by INTEGER NOT NULL REFERENCES users(id),
+		kind TEXT NOT NULL DEFAULT 'expense',
+		created_by INTEGER NOT NULL,
+		created TEXT NOT NULL
+	);
+	CREATE TABLE owes_shares (
+		owes_id INTEGER NOT NULL REFERENCES owes(id) ON DELETE CASCADE,
+		user_id INTEGER NOT NULL REFERENCES users(id),
+		share_cents INTEGER NOT NULL,
+		PRIMARY KEY(owes_id, user_id)
+	);
+	ALTER TABLE categories ADD COLUMN rollover INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE categories ADD COLUMN rollover_from TEXT NOT NULL DEFAULT '';
+	CREATE TABLE annual_costs (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		month INTEGER NOT NULL,
+		category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE reconciliations (
+		id INTEGER PRIMARY KEY,
+		account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+		statement_date TEXT NOT NULL,
+		statement_cents INTEGER NOT NULL,
+		app_cents INTEGER NOT NULL,
+		user_id INTEGER NOT NULL,
+		created TEXT NOT NULL
+	);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

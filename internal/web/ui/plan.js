@@ -29,12 +29,12 @@ function lineChart(series, floor) {
 }
 const COLORS = ['#4f7cff', '#2bb673', '#ff8a3d', '#e2558b', '#8a63d2', '#14a3a3'];
 
+const PLAN_TABS = [['forecast', 'Forecast', () => forecastTab], ['subs', 'Subscriptions', () => subsTab], ['income', 'Income', () => incomeTab]];
 async function planView(el) {
   const tab = S.planTab || 'forecast';
-  el.innerHTML = `<h1>Plan</h1><div class="tabs">${[['forecast', 'Forecast'], ['subs', 'Subscriptions'], ['income', 'Income']].map(([k, t]) => `<button data-ptab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="planBody"></div>`;
+  el.innerHTML = `<h1>Plan</h1><div class="tabs">${PLAN_TABS.map(([k, t]) => `<button data-ptab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="planBody"></div>`;
   el.querySelectorAll('[data-ptab]').forEach((b) => (b.onclick = () => { S.planTab = b.dataset.ptab; planView(el); }));
-  const body = $('#planBody');
-  await ({ forecast: forecastTab, subs: subsTab, income: incomeTab }[tab])(body);
+  await (PLAN_TABS.find((x) => x[0] === tab) || PLAN_TABS[0])[2]()($('#planBody'));
 }
 
 async function forecastTab(el) {

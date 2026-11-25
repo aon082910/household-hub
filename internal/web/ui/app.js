@@ -545,7 +545,7 @@ async function budget(el) {
     const cls = c.budget_cents && c.spent_cents > c.budget_cents ? 'over' : pct >= 85 ? 'near' : '';
     return `<tr><td><b>${esc(c.name)}</b>${c.budget_cents ? `<div class="bar ${cls}"><i style="width:${pct}%"></i></div>` : ''}</td><td class="num">${money(c.spent_cents)}</td>
       <td class="num"><input data-budget="${c.id}" value="${esc(centsInput(c.budget_cents))}" placeholder="no budget" inputmode="decimal" style="width:7.5rem;text-align:right"></td>
-      <td class="num ${c.budget_cents && c.budget_cents - c.spent_cents < 0 ? 'bad' : ''}">${c.budget_cents ? money(c.budget_cents - c.spent_cents) : ''}</td><td><button class="small" data-cat="${c.id}">&#9998;</button></td></tr>`;
+      <td class="num ${c.budget_cents && c.available_cents < 0 ? 'bad' : ''}">${c.budget_cents ? money(c.available_cents) : ''}${c.rollover ? `<br><small title="carried from earlier months">&#8635; ${money(c.carry_cents, true)}</small>` : ''}</td><td><button class="small" data-cat="${c.id}">&#9998;</button></td></tr>`;
   };
   el.innerHTML = `<div class="spread"><h1>Budget</h1><div class="row"><button id="bPrev">&lsaquo;</button><b>${esc(S.budgetMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</b><button id="bNext">&rsaquo;</button><button id="catAdd">+ Category</button></div></div>
     <div class="stats"><div class="stat"><small>Budgeted</small><b>${money(s.budget_cents)}</b></div><div class="stat"><small>Spent in budgeted categories</small><b>${money(s.budget_spent_cents)}</b></div>
@@ -567,11 +567,16 @@ function catForm(c) {
   openModal(`<form id="catForm"><h2>${isNew ? 'New category' : 'Edit category'}</h2><label>Name</label><input name="name" value="${esc(c.name)}" required>
     <label>Kind</label><select name="kind">${opts([['expense', 'Spending'], ['income', 'Income']], c.kind)}</select>
     <label>Monthly budget</label><input name="budget" inputmode="decimal" value="${esc(centsInput(c.budget_cents))}">
+    <label class="inline"><input type="checkbox" name="rollover" ${c.rollover ? 'checked' : ''}> Roll over: money not spent this month carries into next month (overspending is taken off)</label>
     <label>Tax line (business categories)</label><select name="tax_line">${opts((typeof TAX_LINES !== 'undefined' ? TAX_LINES : []).map((x) => [x, x]), c.tax_line, '(none)')}</select>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="catDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#catForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
-      try { await api(isNew ? 'POST' : 'PUT', '/api/categories' + (isNew ? '' : '/' + c.id), { name: d.name, kind: d.kind, budget_cents: toCents(d.budget), color: c.color || '', tax_line: d.tax_line || '' }); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); }
+      try {
+        const r = await api(isNew ? 'POST' : 'PUT', '/api/categories' + (isNew ? '' : '/' + c.id), { name: d.name, kind: d.kind, budget_cents: toCents(d.budget), color: c.color || '', tax_line: d.tax_line || '' });
+        if (!!d.rollover !== !!c.rollover) await api('PUT', `/api/categories/${r.id || c.id}/rollover`, { on: !!d.rollover });
+        S.cats = await api('GET', '/api/categories'); closeModal(); render();
+      } catch (e) { fail(e); }
     };
     const del = $('#catDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete category "' + c.name + '"? Its transactions keep no category.')) return; try { await api('DELETE', '/api/categories/' + c.id); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); } };
@@ -601,7 +606,9 @@ function accForm(a) {
     <div class="full"><label>Warn me when the forecast drops below (empty = no warning)</label><input name="low" inputmode="decimal" value="${a.low_balance_cents != null ? esc((a.low_balance_cents / 100).toFixed(2)) : ''}" placeholder="e.g. 200.00"></div>
     <div class="full"><label>Notes</label><input name="notes" value="${esc(a.notes)}" placeholder="No full account numbers here, please"></div>
     <div class="full"><label class="inline"><input type="checkbox" name="private" ${a.private ? 'checked' : ''}> Private (only me)</label><label class="inline"><input type="checkbox" name="archived" ${a.archived ? 'checked' : ''}> Archived</label><label class="inline"><input type="checkbox" name="business" ${a.business ? 'checked' : ''}> Business account (imports marked business)</label></div></div>
-    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="accDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="accDel">Delete</button><button type="button" id="accCheck">Check against statement</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    const chk = $('#accCheck', sh);
+    if (chk && typeof statementCheck === 'function') chk.onclick = () => statementCheck(a);
     $('#accForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
       try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived, low_balance_cents: String(d.low).trim() === '' ? null : toCents(d.low), business: d.business, apr_bps: Math.round((parseFloat(d.apr) || 0) * 100), min_payment_cents: Math.abs(toCents(d.minpay)) }); closeModal(); render(); } catch (e) { fail(e); }

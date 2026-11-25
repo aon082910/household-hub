@@ -37,6 +37,8 @@ type Category struct {
 	BudgetCents int64  `json:"budget_cents"`
 	Color       string `json:"color"`
 	TaxLine     string `json:"tax_line"` // Schedule C line, for the business tax report
+	Rollover    bool   `json:"rollover"` // unspent budget carries into the next month
+	RollFrom    string `json:"rollover_from"`
 }
 
 // Transaction is money in (positive) or out (negative).
@@ -174,7 +176,7 @@ func mustChange(res sql.Result, err error) error {
 
 // ListCategories returns every category.
 func (s *Store) ListCategories() ([]Category, error) {
-	rows, err := s.DB.Query(`SELECT id,name,kind,budget_cents,color,tax_line FROM categories ORDER BY kind DESC, name`)
+	rows, err := s.DB.Query(`SELECT id,name,kind,budget_cents,color,tax_line,rollover,rollover_from FROM categories ORDER BY kind DESC, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +184,9 @@ func (s *Store) ListCategories() ([]Category, error) {
 	out := []Category{}
 	for rows.Next() {
 		var c Category
-		rows.Scan(&c.ID, &c.Name, &c.Kind, &c.BudgetCents, &c.Color, &c.TaxLine)
+		var ro int
+		rows.Scan(&c.ID, &c.Name, &c.Kind, &c.BudgetCents, &c.Color, &c.TaxLine, &ro, &c.RollFrom)
+		c.Rollover = ro == 1
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -543,7 +547,9 @@ func abs(n int64) int64 {
 // CategorySpend is one row of the monthly budget view.
 type CategorySpend struct {
 	Category
-	SpentCents int64 `json:"spent_cents"`
+	SpentCents     int64 `json:"spent_cents"`
+	CarryCents     int64 `json:"carry_cents"`     // rollover from earlier months (can be negative)
+	AvailableCents int64 `json:"available_cents"` // budget + carry - spent
 }
 
 // MonthSummary is the money part of the dashboard.
@@ -593,8 +599,12 @@ func (s *Store) Summary(uid int64, month string) (MonthSummary, error) {
 		cs := CategorySpend{Category: c, SpentCents: spent[c.ID]}
 		if c.Kind == "expense" {
 			cs.SpentCents = -cs.SpentCents // show spending as a positive number
+			if c.Rollover {
+				cs.CarryCents = s.carryOver(uid, c.ID, c.BudgetCents, c.RollFrom, month)
+			}
+			cs.AvailableCents = c.BudgetCents + cs.CarryCents - cs.SpentCents
 			if c.BudgetCents > 0 {
-				ms.BudgetCents += c.BudgetCents
+				ms.BudgetCents += c.BudgetCents + cs.CarryCents
 				ms.BudgetSpent += cs.SpentCents
 			}
 		}
