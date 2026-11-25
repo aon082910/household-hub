@@ -524,11 +524,11 @@ func (s *Store) RunBackup(keep int) (string, error) {
 			return "", err
 		}
 	}
-	if err := copyFilesDir(filepath.Join(filepath.Dir(s.Path), "files"), filepath.Join(dir, "files")); err != nil {
-		return name, fmt.Errorf("database saved, attachments not: %w", err)
-	}
 	if keep < 1 {
 		keep = 30
+	}
+	if err := copyFilesDir(filepath.Join(filepath.Dir(s.Path), "files"), filepath.Join(dir, "files"), keep); err != nil {
+		return name, fmt.Errorf("database saved, attachments not: %w", err)
 	}
 	list, _ := s.ListBackups()
 	for i := keep; i < len(list); i++ {
@@ -538,11 +538,25 @@ func (s *Store) RunBackup(keep int) (string, error) {
 }
 
 // copyFilesDir mirrors new attachment files (receipts, documents) into the backup folder. Files never change
-// after upload, so only missing ones are copied.
-func copyFilesDir(src, dst string) error {
+// after upload, so only missing ones are copied. A file deleted in the app is removed from the backup copy once
+// it is older than the keep window (older database backups may still point at it until then).
+func copyFilesDir(src, dst string, keepDays int) error {
 	if _, err := os.Stat(src); err != nil {
 		return nil
 	}
+	cut := time.Now().AddDate(0, 0, -keepDays)
+	filepath.WalkDir(dst, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dst, p)
+		if _, err := os.Stat(filepath.Join(src, rel)); os.IsNotExist(err) {
+			if info, err := d.Info(); err == nil && info.ModTime().Before(cut) {
+				os.Remove(p)
+			}
+		}
+		return nil
+	})
 	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -639,33 +653,40 @@ func (s *Store) DailyChecks(now time.Time, send Sender) {
 		return
 	}
 	s.docReminders(now, send, cfg)
-	admin := s.firstAdmin()
-	// subscription price changes seen in the last 5 days, once each
-	subs, _ := s.Subscriptions(admin)
-	for _, sub := range subs {
-		if sub.OldCents == 0 || sub.Status == "ignored" {
-			continue
-		}
-		if d, err := time.Parse(DateFmt, sub.ChangedOn); err != nil || now.Sub(d) > 5*24*time.Hour {
-			continue
-		}
-		if s.claim("subprice", 0, sub.Key+"|"+sub.ChangedOn, "", 0) {
-			cur := cfg["currency"]
-			s.alertAdults(send, Message{Title: fmt.Sprintf("Price change: %s %s%s → %s%s", sub.Name, cur, FormatCents(sub.OldCents), cur, FormatCents(sub.AmountCents)),
-				Body: fmt.Sprintf("About %s%s a year now.", cur, FormatCents(sub.YearlyCost))})
-		}
+	// the heavier checks below run once an hour, not every minute
+	if !s.claim("moneyscan", 0, now.Format("2006-01-02T15"), "", 0) {
+		return
 	}
-	// low balance ahead (next 14 days), once per account and low point
-	fc, _, _ := s.Forecast(admin, 14)
-	for _, f := range fc {
-		if !f.Warning {
+	cur := cfg["currency"]
+	users, _ := s.ListUsers()
+	for _, u := range users {
+		if !u.Active || !u.CanFinance() {
 			continue
 		}
-		if s.claim("lowbal", f.AccountID, f.LowestDate, "", 0) {
-			cur := cfg["currency"]
-			d, _ := ParseLocal(f.LowestDate)
-			s.alertAdults(send, Message{Title: fmt.Sprintf("%s may drop to %s%s on %s", f.Name, cur, FormatCents(f.LowestCents), d.Format("Mon Jan 2")),
-				Body: fmt.Sprintf("Your warning level is %s%s. See Plan > Forecast.", cur, FormatCents(*f.LowBalance))})
+		// each adult is told only about what they can see (their own private accounts stay theirs)
+		subs, _ := s.Subscriptions(u.ID)
+		for _, sub := range subs {
+			if sub.OldCents == 0 || sub.Status == "ignored" {
+				continue
+			}
+			if d, err := time.Parse(DateFmt, sub.ChangedOn); err != nil || now.Sub(d) > 5*24*time.Hour {
+				continue
+			}
+			if s.claim("subprice", 0, sub.Key+"|"+sub.ChangedOn, "", u.ID) {
+				s.notify(send, u, Message{Title: fmt.Sprintf("Price change: %s %s%s → %s%s", sub.Name, cur, FormatCents(sub.OldCents), cur, FormatCents(sub.AmountCents)),
+					Body: fmt.Sprintf("About %s%s a year now.", cur, FormatCents(sub.YearlyCost))})
+			}
+		}
+		fc, _, _ := s.Forecast(u.ID, 14)
+		for _, f := range fc {
+			if !f.Warning {
+				continue
+			}
+			if s.claim("lowbal", f.AccountID, f.LowestDate, "", u.ID) {
+				d, _ := ParseLocal(f.LowestDate)
+				s.notify(send, u, Message{Title: fmt.Sprintf("%s may drop to %s%s on %s", f.Name, cur, FormatCents(f.LowestCents), d.Format("Mon Jan 2")),
+					Body: fmt.Sprintf("Your warning level is %s%s. See Plan > Forecast.", cur, FormatCents(*f.LowBalance))})
+			}
 		}
 	}
 }

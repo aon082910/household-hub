@@ -220,3 +220,33 @@ type capSender struct{ fn func(Message) }
 
 func (c *capSender) Deliver(u *User, m Message) string { c.fn(m); return "ok" }
 func (c *capSender) Household(m Message) error         { return nil }
+
+func TestPrivateAlertsStayPrivate(t *testing.T) {
+	s, mom, _ := setupFin(t) // 2026-11-25
+	dad, _ := s.CreateUser("dad", "Dad", "password1", RoleAdult, "")
+	low := int64(50000)
+	mine := Account{Name: "Mom savings", Type: "savings", OpeningCents: 60000, Private: true, LowBalance: &low}
+	s.SaveAccount(mom.ID, &mine)
+	s.SaveBill(mom.ID, &Bill{Name: "Gym", AmountCents: 20000, StartDate: "2026-11-28", Freq: "monthly", AccountID: &mine.ID, Private: true})
+	for i, d := range []string{"2026-07-22", "2026-08-22", "2026-09-22", "2026-10-22", "2026-11-22"} {
+		amt := int64(-999)
+		if i == 4 {
+			amt = -1299
+		}
+		tx := Transaction{Date: d, AmountCents: amt, AccountID: &mine.ID, Payee: "SECRET APP", Private: true}
+		s.SaveTransaction(mom.ID, &tx)
+	}
+	f := &fakeSender{}
+	s.SaveSettings(map[string]string{"backup_keep": "0"})
+	s.DailyChecks(at("2026-11-25T10:00"), f)
+	for _, x := range f.sent {
+		if strings.HasPrefix(x, "dad|") {
+			t.Errorf("dad was told about mom's private money: %s", x)
+		}
+	}
+	got := strings.Join(f.sent, ";")
+	if !strings.Contains(got, "mom|Mom savings may drop") || !strings.Contains(got, "mom|Price change: SECRET APP") {
+		t.Errorf("mom not told: %s", got)
+	}
+	_ = dad
+}

@@ -12,7 +12,6 @@ import (
 // routesRound2: category rules, splits, bulk edit, receipts, business tax report.
 func (sv *Server) routesRound2() {
 	m := sv.mux
-	user := func(p string, h handler) { m.HandleFunc(p, sv.auth(h, "")) }
 	fin := func(p string, h handler) { m.HandleFunc(p, sv.auth(h, "finance")) }
 
 	fin("GET /api/category-rules", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
@@ -71,8 +70,9 @@ func (sv *Server) routesRound2() {
 		}
 		return sv.Store.AddAttachment(u.ID, "receipt", &id, nil, name, data)
 	})
-	user("GET /api/files/{id}", sv.serveFile)
-	user("DELETE /api/files/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+	// receipts and documents are adults-only
+	fin("GET /api/files/{id}", sv.serveFile)
+	fin("DELETE /api/files/{id}", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		return ok(), sv.Store.DeleteAttachment(u.ID, pathID(r))
 	})
 

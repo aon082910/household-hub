@@ -8,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -176,5 +177,28 @@ func TestSetupLoginRolesAndCSRF(t *testing.T) {
 	resp.Body.Close()
 	if r, _ := http.Get(c.srv.URL + "/ics/0000000000000000000.ics"); r.StatusCode != 404 {
 		t.Error("bad ics token served")
+	}
+}
+
+func TestKidsCannotReachFiles(t *testing.T) {
+	c, s := newTC(t)
+	c.do(c.c, "POST", "/api/setup", map[string]string{"Username": "mom", "DisplayName": "Mom", "Password": "password1"}, nil)
+	_, acc := c.do(c.c, "POST", "/api/accounts", map[string]any{"name": "A"}, nil)
+	_, tx := c.do(c.c, "POST", "/api/transactions", map[string]any{"date": "2026-11-20", "amount_cents": -500, "account_id": acc["id"], "payee": "Shop"}, nil)
+	txID := int64(tx["id"].(float64))
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 32)...)
+	a, err := s.AddAttachment(1, "receipt", &txID, nil, "r.png", png)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.do(c.c, "POST", "/api/users", map[string]string{"Username": "kid", "DisplayName": "Kid", "Password": "password1", "Role": "kid"}, nil)
+	kid := client()
+	c.do(kid, "POST", "/api/login", map[string]string{"Username": "kid", "Password": "password1"}, nil)
+	path := "/api/files/" + strconv.FormatInt(a.ID, 10)
+	if code, _ := c.do(kid, "GET", path, nil, nil); code != 403 {
+		t.Errorf("kid read a receipt: %d", code)
+	}
+	if code, _ := c.do(kid, "DELETE", path, nil, nil); code != 403 {
+		t.Errorf("kid deleted a receipt: %d", code)
 	}
 }
