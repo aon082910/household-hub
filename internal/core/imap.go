@@ -236,6 +236,7 @@ func (s *Store) RunMailEngine(ctx context.Context, send Sender) {
 			}()
 			s.ScanAll(IMAPFetch, send)
 			s.ScanAllWatchFolders(send)
+			s.FetchDueFeeds()
 		}()
 		select {
 		case <-ctx.Done():

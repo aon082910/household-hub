@@ -402,6 +402,46 @@ var migrations = []string{
 		ip TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX audit_at ON audit_log(at);`,
+	// 9: calendar subscriptions, document vault, wall display
+	`CREATE TABLE calendar_feeds (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		url TEXT NOT NULL,
+		color TEXT NOT NULL DEFAULT '#8a63d2',
+		members TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		last_fetch TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT '',
+		skipped INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE feed_items (
+		id INTEGER PRIMARY KEY,
+		feed_id INTEGER NOT NULL REFERENCES calendar_feeds(id) ON DELETE CASCADE,
+		uid TEXT NOT NULL,
+		start_at TEXT NOT NULL,
+		end_at TEXT NOT NULL DEFAULT '',
+		all_day INTEGER NOT NULL DEFAULT 0,
+		title TEXT NOT NULL,
+		location TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX feed_items_start ON feed_items(start_at);
+	CREATE TABLE documents (
+		id INTEGER PRIMARY KEY,
+		title TEXT NOT NULL,
+		kind TEXT NOT NULL DEFAULT 'other',
+		expires TEXT NOT NULL DEFAULT '',
+		remind_days TEXT NOT NULL DEFAULT '30,7',
+		notes TEXT NOT NULL DEFAULT '',
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 1,
+		created TEXT NOT NULL
+	);
+	CREATE TABLE display_tokens (
+		token_hash TEXT PRIMARY KEY,
+		label TEXT NOT NULL,
+		created TEXT NOT NULL,
+		last_seen TEXT NOT NULL DEFAULT ''
+	);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

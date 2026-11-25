@@ -638,6 +638,7 @@ func (s *Store) DailyChecks(now time.Time, send Sender) {
 	if now.Hour() < bh || send == nil {
 		return
 	}
+	s.docReminders(now, send, cfg)
 	admin := s.firstAdmin()
 	// subscription price changes seen in the last 5 days, once each
 	subs, _ := s.Subscriptions(admin)

@@ -236,6 +236,7 @@ func (s *Store) Calendar(u *User, from, to time.Time, withBills bool) ([]Occurre
 	for _, e := range evs {
 		out = append(out, eventOccurrences(e, from, to)...)
 	}
+	out = append(out, s.feedOccurrences(from, to)...)
 	if withBills && u.CanFinance() {
 		dues, err := s.BillDues(u.ID, from, to)
 		if err != nil {

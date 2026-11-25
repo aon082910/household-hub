@@ -1,4 +1,4 @@
-# Household Hub
+﻿# Household Hub
 
 Shared household finances and calendar. Bills with due dates, accounts, transactions, monthly budgets, and a family calendar for appointments and due dates. Everyone in the house has their own login. Reminders go out as in-app alerts, Windows notifications, browser pop-ups, phone push (ntfy), email, text message, or Discord/webhook.
 
@@ -28,6 +28,15 @@ Windows modes (chosen on first start, changeable in Settings > My profile > Chan
 - Statement folders (Settings > Auto import): CSV/OFX/QFX files saved into a folder are imported into its account every 10 minutes. Files are only read; each is imported once (by checksum). In Docker the folders live under `/statements` (map it to e.g. `/mnt/user/appdata/household-hub/statements`).
 - No double counting: PayPal and bank transaction IDs are kept per account, and a charge seen by email, statement file, autopay or by hand within 3 days for the same amount is linked instead of added twice. Transfers between your own accounts are left out of income, spending and budgets.
 - Bill matching: an imported or emailed charge whose payee matches a bill name ("STRAIGHTTALK*AIRTIME" for "Straight Talk") marks the closest unpaid due date paid and updates the bill amount when it changed. Bill emails with "amount due" update the next amount and notify the people the bill is for.
+- Plan page: cash-flow forecast (bills, income schedules, found subscriptions), safe-to-spend and low-balance alerts; subscription finder with price-change alerts; daily automatic backups (data/backups, keeps 30, copies attachments).
+- Phone alerts for bills carry a one-tap "Mark paid" button (ntfy; single-use link, needs the base URL set, works on the home network).
+- Business page: business vs personal, Schedule C summary and CSV, category rules; receipts (photos/PDF) on transactions; split transactions; bulk edit.
+- Reports: spending trends, net worth, year in review, savings goals, debt payoff (snowball vs avalanche).
+- Family page: shared shopping and to-do lists, chores (kids tick, adults OK) with an allowance ledger, weekly meal plan that fills the shopping list.
+- Documents: insurance cards, licenses, warranties with files and expiry reminders (adults only, private by default).
+- Other calendars: read school/team/Google/Outlook .ics feeds into the family calendar (one-way, hourly).
+- Wall display: read-only week view for a kitchen tablet via its own link (no sign-in, nothing private, no money).
+- Security: two-step sign-in (authenticator app + recovery codes), change log, trusted reverse proxy setting, outside-access guide.
 - Backup download (admin).
 
 ## Security notes
@@ -58,4 +67,4 @@ Open `http://<server>:8095/` and create the first (admin) account.
 
 **Windows:** build with `.\build.ps1 -Install`, then open Household Hub from the Start Menu.
 
-Image: [allornothing/household-hub](https://hub.docker.com/r/allornothing/household-hub) · MIT licensed.
+Image: [allornothing/household-hub](https://hub.docker.com/r/allornothing/household-hub) Â· MIT licensed.

@@ -42,6 +42,9 @@ func (s *Store) ICS(u *User) (string, error) {
 	b.WriteString(fold("X-WR-CALNAME:" + icsEscape(name)))
 	stamp := now.UTC().Format("20060102T150405Z")
 	for _, o := range occ {
+		if o.Source == "feed" {
+			continue // the phone can subscribe to that calendar itself
+		}
 		b.WriteString("BEGIN:VEVENT\r\n")
 		b.WriteString(fold("UID:" + strings.ReplaceAll(o.Key, ":", "-") + "@household-hub"))
 		b.WriteString("DTSTAMP:" + stamp + "\r\n")

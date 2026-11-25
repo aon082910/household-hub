@@ -239,7 +239,7 @@ async function dashboard(el) {
         <span class="num">${money(b.amount_cents)}</span><button class="small" data-pay="${b.bill_id}|${b.date}">Paid</button></li>`).join('') : '<li class="empty">Nothing due. Nice.</li>') + '</ul></div>';
   }
   html += `<div class="card"><div class="spread"><h2>Next 7 days</h2><button class="small primary" id="dashAdd">+ Event</button></div><ul class="list">` +
-    (d.events.length ? d.events.map((o) => `<li data-occ="${esc(o.id)}" class="click"><span class="dot" style="background:${esc(memberColor(o))}"></span>
+    (d.events.length ? d.events.map((o) => `<li ${o.source === 'feed' ? '' : `data-occ="${esc(o.id)}" class="click"`}><span class="dot" style="background:${esc(memberColor(o))}"></span>
       <span class="grow"><b>${esc(o.title)}</b><br><small>${esc(o.start.slice(0, 10) === today ? 'Today' : relDay(o.start))} &middot; ${esc(fmtTime(o.start))} &middot; ${esc(whoText(o))}${o.location ? ' &middot; ' + esc(o.location) : ''}</small></span></li>`).join('') : '<li class="empty">Nothing planned.</li>') + '</ul></div>';
   if (d.accounts) {
     html += `<div class="card"><div class="spread"><h2>Accounts</h2><a href="#accounts">Manage</a></div><ul class="list">` +
@@ -304,6 +304,9 @@ async function calendar(el) {
 function occRow(o) {
   if (o.source === 'bill') {
     return `<li class="click" data-bill="${o.id}|${esc(o.start)}"><span class="dot" style="background:var(--bill)"></span><span class="grow"><b>${esc(o.title)}</b> ${o.paid ? '<span class="pill good">paid</span>' : o.overdue ? '<span class="pill bad">overdue</span>' : ''}<br><small>Bill &middot; ${money(o.amount_cents)}</small></span></li>`;
+  }
+  if (o.source === 'feed') {
+    return `<li><span class="dot" style="background:${esc(memberColor(o))}"></span><span class="grow"><b>${esc(o.title)}</b> <span class="pill">${esc(o.kind)}</span><br><small>${esc(fmtTime(o.start))}${o.end && o.end.includes('T') ? ' - ' + esc(fmtTime(o.end)) : ''}${o.location ? ' &middot; ' + esc(o.location) : ''}</small></span></li>`;
   }
   return `<li class="click" data-ev="${o.id}"><span class="dot" style="background:${esc(memberColor(o))}"></span><span class="grow"><b>${esc(o.title)}</b>${o.repeats ? ' <small>&#8635;</small>' : ''}<br><small>${esc(fmtTime(o.start))}${o.end && o.end.includes('T') ? ' - ' + esc(fmtTime(o.end)) : ''} &middot; ${esc(whoText(o))}${o.location ? ' &middot; ' + esc(o.location) : ''}</small></span></li>`;
 }
