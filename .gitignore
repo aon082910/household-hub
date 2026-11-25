@@ -1,0 +1,6 @@
+*.exe
+dist/
+*.db
+*.db-wal
+*.db-shm
+PROJECT.md

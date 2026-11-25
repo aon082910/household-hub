@@ -1,0 +1,16 @@
+name: household-hub
+services:
+  household-hub:
+    image: household-hub:dev
+    build: .
+    container_name: household-hub-dev
+    restart: unless-stopped
+    ports:
+      - "8095:8080"
+    environment:
+      TZ: America/New_York
+    volumes:
+      - household-hub-data:/data
+volumes:
+  household-hub-data:
+    name: household-hub-data

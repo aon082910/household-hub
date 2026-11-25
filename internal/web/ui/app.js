@@ -1,0 +1,709 @@
+// Household Hub web app. Plain JS, no build step. All HTML goes through esc() before it is inserted.
+'use strict';
+
+const S = { me: null, settings: {}, users: [], cats: [], accounts: [], view: 'dashboard', latest: 0, calMonth: null, calMode: 'month', txMonth: null, budgetMonth: null };
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const inWindowApp = () => typeof window.hhubSaveDevice === 'function';
+
+// ---------- helpers ----------
+async function api(method, path, body) {
+  const opt = { method, headers: { 'X-HHub': '1' }, credentials: 'same-origin' };
+  if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let data = null;
+  try { data = await r.json(); } catch (_) { /* not JSON */ }
+  if (r.status === 401 && path !== '/api/login') { showAuth(); throw new Error('Please sign in'); }
+  if (!r.ok) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  return data;
+}
+function toast(msg, err) {
+  const t = $('#toast'); t.textContent = msg; t.className = 'toast' + (err ? ' err' : '');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), err ? 6000 : 2600);
+}
+const fail = (e) => toast(e.message || String(e), true);
+function money(c, sign) {
+  const cur = S.settings.currency || '$';
+  const n = Math.abs(c || 0) / 100;
+  const s = cur + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (c < 0) return '-' + s;
+  return (sign && c > 0 ? '+' : '') + s;
+}
+function toCents(v) {
+  v = String(v || '').replace(/[$,\s]/g, '');
+  if (v === '') return 0;
+  const n = Math.round(parseFloat(v) * 100);
+  if (isNaN(n)) throw new Error('Amount is not a number');
+  return n;
+}
+const centsInput = (c) => (c ? (Math.abs(c) / 100).toFixed(2) : '');
+const pad = (n) => String(n).padStart(2, '0');
+const ymd = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const ym = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1);
+function parseLocal(s) { // "2026-11-25" or "2026-11-25T14:00"
+  const [d, t] = s.split('T'); const [y, m, dd] = d.split('-').map(Number);
+  const [hh, mm] = (t || '00:00').split(':').map(Number);
+  return new Date(y, m - 1, dd, hh, mm);
+}
+function fmtDate(s, opts) { return parseLocal(s).toLocaleDateString(undefined, opts || { weekday: 'short', month: 'short', day: 'numeric' }); }
+function fmtTime(s) { return s.includes('T') ? parseLocal(s).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : 'All day'; }
+function relDay(s) {
+  const t = parseLocal(s.slice(0, 10)); const now = new Date(); now.setHours(0, 0, 0, 0);
+  const d = Math.round((t - now) / 86400000);
+  if (d === 0) return 'Today'; if (d === 1) return 'Tomorrow'; if (d === -1) return 'Yesterday';
+  if (d < 0) return Math.abs(d) + ' days ago'; if (d < 7) return 'In ' + d + ' days';
+  return fmtDate(s);
+}
+const userBy = (id) => S.users.find((u) => u.id === id);
+const userName = (id) => (userBy(id) || {}).display_name || '?';
+const catName = (id) => (S.cats.find((c) => c.id === id) || {}).name || '';
+const accName = (id) => (S.accounts.find((a) => a.id === id) || {}).name || '';
+const canFin = () => S.me && (S.me.role === 'admin' || S.me.role === 'adult');
+const isAdmin = () => S.me && S.me.role === 'admin';
+function memberColor(o) {
+  if (o.color) return o.color;
+  const ids = (o.members || '').split(',').filter(Boolean).map(Number);
+  if (ids.length === 1 && userBy(ids[0])) return userBy(ids[0]).color;
+  if (o.owner_id && o.private && userBy(o.owner_id)) return userBy(o.owner_id).color;
+  return '#4f7cff';
+}
+function whoText(o) {
+  const ids = (o.members || '').split(',').filter(Boolean).map(Number);
+  if (o.private) return 'Private';
+  if (!ids.length) return 'Everyone';
+  return ids.map(userName).join(', ');
+}
+function opts(list, sel, blank) {
+  return (blank !== undefined ? `<option value="">${esc(blank)}</option>` : '') +
+    list.map((x) => `<option value="${esc(x[0])}"${String(x[0]) === String(sel ?? '') ? ' selected' : ''}>${esc(x[1])}</option>`).join('');
+}
+function formData(form) {
+  const o = {};
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    if (el.type === 'checkbox') { if (el.dataset.group) { (o[el.dataset.group] = o[el.dataset.group] || []); if (el.checked) o[el.dataset.group].push(el.value); } else o[el.name] = el.checked; }
+    else if (el.type === 'radio') { if (el.checked) o[el.name] = el.value; }
+    else o[el.name] = el.value;
+  }
+  return o;
+}
+const idOrNull = (v) => (v ? Number(v) : null);
+
+// ---------- modal ----------
+function openModal(html, onReady) {
+  $('#sheet').innerHTML = html; $('#modal').classList.remove('hidden');
+  const f = $('#sheet input:not([type=hidden]), #sheet select'); if (f && window.innerWidth > 760) f.focus();
+  if (onReady) onReady($('#sheet'));
+}
+function closeModal() { $('#modal').classList.add('hidden'); $('#sheet').innerHTML = ''; }
+$('#modal').addEventListener('mousedown', (e) => { if (e.target.id === 'modal') closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+// ---------- auth ----------
+function showAuth(setup) {
+  $('#app').classList.add('hidden'); const a = $('#auth'); a.classList.remove('hidden');
+  if (setup) {
+    a.innerHTML = `<form class="card" id="setupForm"><img src="icon.svg" alt=""><h1>Welcome</h1>
+      <p class="mute">Create the first account. It is the household admin and can add everyone else.</p>
+      <label>Household name</label><input name="household_name" placeholder="The Smith Family" required>
+      <label>Your name</label><input name="display_name" required>
+      <label>Username</label><input name="username" autocomplete="username" required>
+      <label>Password (8+ characters)</label><input name="password" type="password" autocomplete="new-password" minlength="8" required>
+      <div class="err" id="authErr"></div><button class="primary" style="width:100%;margin-top:.6rem">Create household</button></form>`;
+    $('#setupForm').addEventListener('submit', async (e) => {
+      e.preventDefault(); const d = formData(e.target);
+      try { await api('POST', '/api/setup', { Username: d.username, DisplayName: d.display_name, Password: d.password, HouseholdName: d.household_name }); boot(); }
+      catch (err) { $('#authErr').textContent = err.message; }
+    });
+  } else {
+    a.innerHTML = `<form class="card" id="loginForm"><img src="icon.svg" alt=""><h1>${esc(S.settings.household_name || 'Household Hub')}</h1>
+      <label>Username</label><input name="username" autocomplete="username" required>
+      <label>Password</label><input name="password" type="password" autocomplete="current-password" required>
+      <div class="err" id="authErr"></div><button class="primary" style="width:100%;margin-top:.6rem">Sign in</button>
+      ${inWindowApp() ? '<p style="text-align:center"><button type="button" class="link" data-action="switch-server">Change server</button></p>' : ''}</form>`;
+    $('#loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault(); const d = formData(e.target);
+      try { await api('POST', '/api/login', { Username: d.username, Password: d.password }); boot(); }
+      catch (err) { $('#authErr').textContent = err.message; }
+    });
+  }
+}
+
+async function boot() {
+  let st;
+  try { st = await api('GET', '/api/state'); } catch (e) { document.body.textContent = 'Cannot reach the server: ' + e.message; return; }
+  S.settings = st.settings || {};
+  document.title = S.settings.household_name || 'Household Hub';
+  if (st.setup_needed) return showAuth(true);
+  if (!st.user) return showAuth(false);
+  S.me = st.user; S.latest = st.latest_notification || 0;
+  $('#auth').classList.add('hidden'); $('#app').classList.remove('hidden');
+  $('#hhName').textContent = S.settings.household_name || 'Household Hub';
+  $('#whoName').textContent = S.me.display_name;
+  document.querySelectorAll('#nav .fin').forEach((a) => a.classList.toggle('hidden', !canFin()));
+  setBadge(st.unread);
+  registerWindowDevice();
+  route();
+  clearInterval(boot.poll); boot.poll = setInterval(poll, 30000);
+}
+
+async function loadRefs() {
+  S.users = await api('GET', '/api/users');
+  if (canFin()) { [S.cats, S.accounts] = await Promise.all([api('GET', '/api/categories'), api('GET', '/api/accounts')]); }
+}
+
+// The Windows app gives each PC a device token so its background notifier can show Windows toasts.
+async function registerWindowDevice() {
+  if (!inWindowApp()) return;
+  try {
+    const has = await window.hhubHasDevice(S.me.username);
+    if (has) return;
+    const host = (await window.hhubHostName()) || 'Windows PC';
+    const d = await api('POST', '/api/me/devices', { Label: 'Windows: ' + host });
+    await window.hhubSaveDevice(JSON.stringify({ token: d.token, latest: d.latest, user: S.me.username }));
+  } catch (e) { console.warn('device registration', e); }
+}
+
+function setBadge(n) { const b = $('#badge'); b.textContent = n; b.classList.toggle('hidden', !n); }
+
+// Poll for new notifications: badge + browser pop-ups (the Windows app shows toasts itself).
+async function poll() {
+  try {
+    const st = await api('GET', '/api/state');
+    if (!st.user) return;
+    setBadge(st.unread);
+    if (st.latest_notification > S.latest) {
+      const r = await api('GET', '/api/notifications?after=' + S.latest);
+      S.latest = st.latest_notification;
+      if (!inWindowApp() && 'Notification' in window && Notification.permission === 'granted') {
+        for (const n of r.items) { try { new Notification(n.title, { body: n.body, icon: 'icon-192.png', tag: 'hhub-' + n.id }); } catch (_) { /* ignore */ } }
+      }
+      if (S.view === 'alerts') render();
+    }
+  } catch (_) { /* offline */ }
+}
+
+document.addEventListener('click', async (e) => {
+  const a = e.target.closest('[data-action]'); if (!a) return;
+  const act = a.dataset.action;
+  if (act === 'logout') { await api('POST', '/api/logout').catch(() => {}); S.me = null; showAuth(false); }
+  if (act === 'switch-server' && window.hhubSwitchServer) window.hhubSwitchServer();
+  if (act === 'close') closeModal();
+});
+
+// ---------- routing ----------
+function route() {
+  if (!S.me) return;
+  let [v, q] = (location.hash.slice(1) || 'dashboard').split('?');
+  const views = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings };
+  if (!views[v] || (!canFin() && ['bills', 'money', 'budget', 'accounts'].includes(v))) v = 'dashboard';
+  S.view = v; S.query = new URLSearchParams(q || '');
+  document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === v));
+  loadRefs().catch(() => {}).then(render); // members, categories and accounts may have changed on another device
+}
+async function render() {
+  const fn = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings }[S.view];
+  try { await fn($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+window.addEventListener('hashchange', route);
+
+// ---------- dashboard ----------
+async function dashboard(el) {
+  const d = await api('GET', '/api/dashboard');
+  const today = d.today;
+  let html = `<h1>Hi ${esc(S.me.display_name)}</h1>`;
+  if (d.summary) {
+    const s = d.summary; const net = s.income_cents - s.expense_cents;
+    const left = s.budget_cents ? s.budget_left_cents : null;
+    html += `<div class="stats">
+      <div class="stat"><small>Income this month</small><b class="good">${money(s.income_cents)}</b></div>
+      <div class="stat"><small>Spent this month</small><b>${money(s.expense_cents)}</b></div>
+      <div class="stat"><small>Net</small><b class="${net < 0 ? 'bad' : 'good'}">${money(net, true)}</b></div>
+      ${left !== null ? `<div class="stat"><small>Budget left</small><b class="${left < 0 ? 'bad' : ''}">${money(left)}</b></div>` : ''}</div>`;
+  }
+  html += '<div class="grid">';
+  if (d.bills) {
+    html += `<div class="card"><div class="spread"><h2>Bills due (30 days)</h2><a href="#bills">All bills</a></div><ul class="list">` +
+      (d.bills.length ? d.bills.map((b) => `<li><span class="grow"><b>${esc(b.name)}</b><br><small>${b.overdue ? '<span class="pill bad">Overdue</span> ' : ''}${esc(relDay(b.date))} &middot; ${esc(fmtDate(b.date))}${b.autopay ? ' &middot; autopay' : ''}</small></span>
+        <span class="num">${money(b.amount_cents)}</span><button class="small" data-pay="${b.bill_id}|${b.date}">Paid</button></li>`).join('') : '<li class="empty">Nothing due. Nice.</li>') + '</ul></div>';
+  }
+  html += `<div class="card"><div class="spread"><h2>Next 7 days</h2><button class="small primary" id="dashAdd">+ Event</button></div><ul class="list">` +
+    (d.events.length ? d.events.map((o) => `<li data-occ="${esc(o.id)}" class="click"><span class="dot" style="background:${esc(memberColor(o))}"></span>
+      <span class="grow"><b>${esc(o.title)}</b><br><small>${esc(o.start.slice(0, 10) === today ? 'Today' : relDay(o.start))} &middot; ${esc(fmtTime(o.start))} &middot; ${esc(whoText(o))}${o.location ? ' &middot; ' + esc(o.location) : ''}</small></span></li>`).join('') : '<li class="empty">Nothing planned.</li>') + '</ul></div>';
+  if (d.accounts) {
+    html += `<div class="card"><div class="spread"><h2>Accounts</h2><a href="#accounts">Manage</a></div><ul class="list">` +
+      (d.accounts.filter((a) => !a.archived).map((a) => `<li><span class="grow">${esc(a.name)} ${a.private ? '<span class="pill">private</span>' : ''}<br><small>${esc(a.type)}</small></span><b class="${a.balance_cents < 0 ? 'bad' : ''}">${money(a.balance_cents)}</b></li>`).join('') || '<li class="empty">No accounts yet.</li>') + '</ul></div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  $('#dashAdd').onclick = () => eventForm({ start: today });
+  el.querySelectorAll('[data-occ]').forEach((li) => (li.onclick = async () => eventForm(await api('GET', '/api/events/' + li.dataset.occ))));
+  el.querySelectorAll('[data-pay]').forEach((b) => (b.onclick = () => { const [id, occ] = b.dataset.pay.split('|'); payForm(Number(id), occ); }));
+}
+
+// ---------- calendar ----------
+async function calendar(el) {
+  const qd = S.query.get('d');
+  if (qd) S.calMonth = parseLocal(qd.slice(0, 7) + '-01');
+  if (!S.calMonth) { const n = new Date(); S.calMonth = new Date(n.getFullYear(), n.getMonth(), 1); }
+  const m = S.calMonth; const ws = Number(S.settings.week_start || 0);
+  const first = new Date(m.getFullYear(), m.getMonth(), 1);
+  const start = new Date(first); start.setDate(1 - ((first.getDay() - ws + 7) % 7));
+  const end = new Date(start); end.setDate(start.getDate() + 41);
+  let from = start, to = end;
+  if (S.calMode === 'agenda') { from = new Date(); from.setHours(0, 0, 0, 0); to = new Date(from); to.setDate(to.getDate() + 60); }
+  const occ = await api('GET', `/api/calendar?from=${ymd(from)}&to=${ymd(to)}`);
+  const head = `<div class="spread"><h1>${S.calMode === 'agenda' ? 'Next 60 days' : esc(m.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</h1>
+    <div class="row">${S.calMode === 'month' ? '<button id="calPrev">&lsaquo;</button><button id="calToday">Today</button><button id="calNext">&rsaquo;</button>' : ''}
+    <button id="calMode">${S.calMode === 'month' ? 'List' : 'Month'}</button><button class="primary" id="calAdd">+ Event</button></div></div>`;
+  if (S.calMode === 'agenda') {
+    let html = head + '<div class="card"><ul class="list">'; let last = '';
+    for (const o of occ) {
+      const day = o.start.slice(0, 10);
+      if (day !== last) { html += `<li><h3 style="margin:.3rem 0 0">${esc(relDay(day))} &middot; ${esc(fmtDate(day))}</h3></li>`; last = day; }
+      html += occRow(o);
+    }
+    el.innerHTML = html + (occ.length ? '' : '<li class="empty">Nothing in the next 60 days.</li>') + '</ul></div>';
+  } else {
+    const byDay = {};
+    for (const o of occ) {
+      const s = parseLocal(o.start.slice(0, 10)); const e = o.end ? parseLocal(o.end.slice(0, 10)) : s;
+      for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) (byDay[ymd(d)] = byDay[ymd(d)] || []).push(o);
+    }
+    const names = []; for (let i = 0; i < 7; i++) { const d = new Date(start); d.setDate(start.getDate() + i); names.push(d.toLocaleDateString(undefined, { weekday: 'short' })); }
+    let html = head + '<div class="cal">' + names.map((n) => `<div class="hd">${esc(n)}</div>`).join('');
+    const todayS = ymd(new Date());
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i); const k = ymd(d); const list = byDay[k] || [];
+      html += `<div class="day${d.getMonth() !== m.getMonth() ? ' other' : ''}${k === todayS ? ' today' : ''}" data-day="${k}"><span class="n">${d.getDate()}</span>` +
+        list.slice(0, 3).map((o) => `<div class="ev${o.source === 'bill' ? ' bill' : ''}${o.paid ? ' paid' : ''}${o.overdue ? ' overdue' : ''}" ${o.source === 'bill' ? '' : `style="background:${esc(memberColor(o))}"`} title="${esc(o.title)}">${o.all_day ? '' : esc(fmtTime(o.start).replace(/:00| /g, '').toLowerCase()) + ' '}${esc(o.title)}</div>`).join('') +
+        (list.length > 3 ? `<div class="more">+${list.length - 3} more</div>` : '') + '</div>';
+    }
+    el.innerHTML = html + '</div>';
+    el.querySelectorAll('[data-day]').forEach((c) => (c.onclick = () => dayPanel(c.dataset.day, byDay[c.dataset.day] || [])));
+    $('#calPrev').onclick = () => { S.calMonth = new Date(m.getFullYear(), m.getMonth() - 1, 1); history.replaceState(null, '', '#calendar'); calendar(el); };
+    $('#calNext').onclick = () => { S.calMonth = new Date(m.getFullYear(), m.getMonth() + 1, 1); history.replaceState(null, '', '#calendar'); calendar(el); };
+    $('#calToday').onclick = () => { S.calMonth = null; history.replaceState(null, '', '#calendar'); S.query = new URLSearchParams(); calendar(el); };
+  }
+  $('#calMode').onclick = () => { S.calMode = S.calMode === 'month' ? 'agenda' : 'month'; calendar(el); };
+  $('#calAdd').onclick = () => eventForm({ start: ymd(new Date()) });
+  bindOccRows(el);
+}
+function occRow(o) {
+  if (o.source === 'bill') {
+    return `<li class="click" data-bill="${o.id}|${esc(o.start)}"><span class="dot" style="background:var(--bill)"></span><span class="grow"><b>${esc(o.title)}</b> ${o.paid ? '<span class="pill good">paid</span>' : o.overdue ? '<span class="pill bad">overdue</span>' : ''}<br><small>Bill &middot; ${money(o.amount_cents)}</small></span></li>`;
+  }
+  return `<li class="click" data-ev="${o.id}"><span class="dot" style="background:${esc(memberColor(o))}"></span><span class="grow"><b>${esc(o.title)}</b>${o.repeats ? ' <small>&#8635;</small>' : ''}<br><small>${esc(fmtTime(o.start))}${o.end && o.end.includes('T') ? ' - ' + esc(fmtTime(o.end)) : ''} &middot; ${esc(whoText(o))}${o.location ? ' &middot; ' + esc(o.location) : ''}</small></span></li>`;
+}
+function bindOccRows(root) {
+  root.querySelectorAll('[data-ev]').forEach((li) => (li.onclick = async () => eventForm(await api('GET', '/api/events/' + li.dataset.ev).catch(fail))));
+  root.querySelectorAll('[data-bill]').forEach((li) => (li.onclick = () => { const [id, occ] = li.dataset.bill.split('|'); payForm(Number(id), occ); }));
+}
+function dayPanel(day, list) {
+  openModal(`<div class="spread"><h2>${esc(fmtDate(day, { weekday: 'long', month: 'long', day: 'numeric' }))}</h2><button class="small" data-action="close">&times;</button></div>
+    <ul class="list">${list.map(occRow).join('') || '<li class="empty">Nothing on this day.</li>'}</ul>
+    <div class="actions"><button class="primary" id="dpAdd">+ Event on this day</button></div>`, (sh) => {
+    bindOccRows(sh); $('#dpAdd', sh).onclick = () => eventForm({ start: day });
+  });
+}
+
+const REMIND = [[0, 'At start'], [15, '15 min'], [60, '1 hour'], [180, '3 hours'], [1440, '1 day'], [2880, '2 days'], [10080, '1 week']];
+const KINDS = [['appointment', 'Appointment'], ['due', 'Due date / deadline'], ['school', 'School'], ['work', 'Work'], ['birthday', 'Birthday'], ['other', 'Other']];
+function freqOpts(sel, bill) {
+  return opts([[bill ? 'once' : 'none', bill ? 'One time' : 'Does not repeat'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['yearly', 'Yearly']], sel || (bill ? 'monthly' : 'none'));
+}
+
+function eventForm(e) {
+  if (!e) return;
+  const isNew = !e.id; const allDay = e.all_day ?? !String(e.start || '').includes('T');
+  const sd = (e.start || ymd(new Date())).slice(0, 10); const stime = (e.start || '').includes('T') ? e.start.slice(11, 16) : '09:00';
+  const ed = (e.end || '').slice(0, 10); const etime = (e.end || '').includes('T') ? e.end.slice(11, 16) : '';
+  const rem = (e.remind_minutes ?? (isNew ? '60' : '')).split(',').filter((x) => x !== '').map(Number);
+  const mem = (e.members || '').split(',').filter(Boolean).map(Number);
+  const extra = rem.filter((r) => !REMIND.some((x) => x[0] === r));
+  const mine = isNew || e.owner_id === S.me.id || !e.private;
+  openModal(`<form id="evForm"><h2>${isNew ? 'New event' : 'Edit event'}</h2>
+    <div class="form2">
+    <div class="full"><label>Title</label><input name="title" value="${esc(e.title)}" required placeholder="Dentist, soccer practice, car registration due..."></div>
+    <div><label>Type</label><select name="kind">${opts(KINDS, e.kind || 'appointment')}</select></div>
+    <div><label>&nbsp;</label><label class="inline"><input type="checkbox" name="all_day" ${allDay ? 'checked' : ''}> All day</label></div>
+    <div><label>Date</label><input type="date" name="sd" value="${esc(sd)}" required></div>
+    <div class="tm"><label>Time</label><input type="time" name="st" value="${esc(stime)}"></div>
+    <div><label>End date (optional)</label><input type="date" name="ed" value="${esc(ed)}"></div>
+    <div class="tm"><label>End time</label><input type="time" name="et" value="${esc(etime)}"></div>
+    <div><label>Repeats</label><select name="freq">${freqOpts(e.freq)}</select></div>
+    <div><label>Every</label><input type="number" name="interval" min="1" value="${esc(e.interval || 1)}"></div>
+    <div class="full"><label>Repeat until (optional)</label><input type="date" name="until" value="${esc(e.until)}"></div>
+    <div class="full"><label>Remind</label>${REMIND.map(([v, t]) => `<label class="inline"><input type="checkbox" data-group="rem" name="rem" value="${v}" ${rem.includes(v) ? 'checked' : ''}>${t}</label>`).join('')}
+      <input name="rem_extra" placeholder="Other minutes before, e.g. 30, 4320" value="${esc(extra.join(', '))}" style="margin-top:.3rem"></div>
+    <div class="full"><label>Who is it for? (none ticked = everyone; reminders go to these people)</label>
+      ${S.users.filter((u) => u.active).map((u) => `<label class="inline"><input type="checkbox" data-group="mem" name="mem" value="${u.id}" ${mem.includes(u.id) ? 'checked' : ''}><span class="dot" style="background:${esc(u.color)}"></span>${esc(u.display_name)}</label>`).join('')}</div>
+    <div class="full"><label>Location</label><input name="location" value="${esc(e.location)}"></div>
+    <div class="full"><label>Notes</label><textarea name="notes" rows="2">${esc(e.notes)}</textarea></div>
+    <div><label class="inline"><input type="checkbox" name="private" ${e.private ? 'checked' : ''}> Private (only me)</label></div>
+    <div><label>Color (optional)</label><input type="color" name="color" value="${esc(e.color || '#4f7cff')}"><label class="inline"><input type="checkbox" name="usecolor" ${e.color ? 'checked' : ''}> use</label></div>
+    </div>
+    <div class="actions">${!isNew && mine ? '<button type="button" class="danger left" id="evDel">Delete</button>' : ''}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    const f = $('#evForm', sh);
+    const sync = () => sh.querySelectorAll('.tm').forEach((x) => x.classList.toggle('hidden', f.all_day.checked));
+    f.all_day.onchange = sync; sync();
+    f.onsubmit = async (ev) => {
+      ev.preventDefault(); const d = formData(f);
+      const rems = d.rem.map(Number).concat(String(d.rem_extra).split(',').map((x) => parseInt(x, 10)).filter((x) => !isNaN(x) && x >= 0));
+      const body = { title: d.title, kind: d.kind, all_day: d.all_day, start: d.all_day ? d.sd : d.sd + 'T' + (d.st || '09:00'), end: '',
+        freq: d.freq, interval: Number(d.interval) || 1, until: d.until, remind_minutes: [...new Set(rems)].join(','), members: d.mem.join(','),
+        location: d.location, notes: d.notes, private: d.private, color: d.usecolor ? d.color : '' };
+      if (d.ed || d.et) body.end = d.all_day ? (d.ed || '') : (d.ed || d.sd) + 'T' + (d.et || d.st || '09:00');
+      try { await api(isNew ? 'POST' : 'PUT', '/api/events' + (isNew ? '' : '/' + e.id), body); closeModal(); toast('Saved'); render(); } catch (err) { fail(err); }
+    };
+    const del = $('#evDel', sh);
+    if (del) del.onclick = async () => {
+      if (!confirm('Delete "' + e.title + '"' + (e.freq && e.freq !== 'none' ? ' and all its repeats' : '') + '?')) return;
+      try { await api('DELETE', '/api/events/' + e.id); closeModal(); toast('Deleted'); render(); } catch (err) { fail(err); }
+    };
+  });
+}
+
+// ---------- bills ----------
+async function bills(el) {
+  const now = new Date(); const from = new Date(now); from.setDate(from.getDate() - 60); const to = new Date(now); to.setDate(to.getDate() + 60);
+  const [list, dues] = await Promise.all([api('GET', '/api/bills'), api('GET', `/api/bills/dues?from=${ymd(from)}&to=${ymd(to)}`)]);
+  const todayS = ymd(now);
+  const open = dues.filter((d) => !d.paid && (d.overdue || d.date >= todayS));
+  const recent = dues.filter((d) => d.paid).reverse().slice(0, 15);
+  const monthly = list.filter((b) => b.active).reduce((s, b) => s + monthlyCost(b), 0);
+  el.innerHTML = `<div class="spread"><h1>Bills</h1><button class="primary" id="billAdd">+ Bill</button></div>
+    <div class="stats"><div class="stat"><small>Unpaid (next 60 days)</small><b>${money(open.reduce((s, d) => s + d.amount_cents, 0))}</b></div>
+      <div class="stat"><small>Overdue</small><b class="${open.some((d) => d.overdue) ? 'bad' : ''}">${open.filter((d) => d.overdue).length}</b></div>
+      <div class="stat"><small>Bills per month (about)</small><b>${money(Math.round(monthly))}</b></div></div>
+    <div class="grid"><div class="card"><h2>Coming up</h2><ul class="list">${open.map((d) => `<li><span class="grow"><b>${esc(d.name)}</b> ${d.overdue ? '<span class="pill bad">overdue</span>' : ''}${d.autopay ? ' <span class="pill">autopay</span>' : ''}<br>
+      <small>${esc(relDay(d.date))} &middot; ${esc(fmtDate(d.date))}${d.assigned_to ? ' &middot; ' + esc(userName(d.assigned_to)) : ''}</small></span><span class="num">${money(d.amount_cents)}</span>
+      ${d.url ? `<a class="btn small" href="${esc(safeUrl(d.url))}" target="_blank" rel="noopener">Pay site</a>` : ''}<button class="small primary" data-pay="${d.bill_id}|${d.date}">Paid</button></li>`).join('') || '<li class="empty">All caught up.</li>'}</ul></div>
+    <div class="card"><h2>Recently paid</h2><ul class="list">${recent.map((d) => `<li><span class="grow">${esc(d.name)}<br><small>due ${esc(fmtDate(d.date))}, paid ${esc(fmtDate(d.paid_date))}</small></span><span class="num">${money(d.paid_cents)}</span><button class="small" data-unpay="${d.bill_id}|${d.date}">Undo</button></li>`).join('') || '<li class="empty">No payments yet.</li>'}</ul></div></div>
+    <div class="card scroll"><h2>All bills</h2><table><tr><th>Name</th><th>Repeats</th><th>Next due</th><th>For</th><th class="num">Amount</th></tr>
+    ${list.map((b) => { const nx = dues.find((d) => d.bill_id === b.id && !d.paid && d.date >= todayS); return `<tr class="click" data-edit="${b.id}"><td>${esc(b.name)} ${b.private ? '<span class="pill">private</span>' : ''}${!b.active ? ' <span class="pill">paused</span>' : ''}</td><td>${esc(freqText(b))}</td><td>${nx ? esc(fmtDate(nx.date)) : '-'}</td><td>${b.assigned_to ? esc(userName(b.assigned_to)) : 'Adults'}</td><td class="num">${money(b.amount_cents)}</td></tr>`; }).join('') || '<tr><td colspan="5" class="empty">No bills yet. Add rent, utilities, phone, insurance, subscriptions...</td></tr>'}</table></div>`;
+  $('#billAdd').onclick = () => billForm({});
+  el.querySelectorAll('[data-edit]').forEach((r) => (r.onclick = () => billForm(list.find((b) => b.id === Number(r.dataset.edit)))));
+  el.querySelectorAll('[data-pay]').forEach((b) => (b.onclick = () => { const [id, occ] = b.dataset.pay.split('|'); payForm(Number(id), occ); }));
+  el.querySelectorAll('[data-unpay]').forEach((b) => (b.onclick = async () => {
+    const [id, occ] = b.dataset.unpay.split('|');
+    if (!confirm('Mark this as not paid? The expense it recorded is removed too.')) return;
+    try { await api('POST', `/api/bills/${id}/unpay`, { Occ: occ }); toast('Marked unpaid'); render(); } catch (e) { fail(e); }
+  }));
+}
+function safeUrl(u) { return /^https?:\/\//i.test(u) ? u : 'https://' + u; }
+function monthlyCost(b) {
+  const n = b.interval || 1;
+  return { daily: b.amount_cents * 30.44 / n, weekly: b.amount_cents * 4.345 / n, monthly: b.amount_cents / n, yearly: b.amount_cents / 12 / n, once: 0 }[b.freq] || 0;
+}
+function freqText(b) {
+  const n = b.interval || 1; const unit = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' }[b.freq];
+  if (!unit) return 'One time';
+  return n === 1 ? { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', yearly: 'Yearly' }[b.freq] : `Every ${n} ${unit}s`;
+}
+function billForm(b) {
+  const isNew = !b.id; const rd = (b.remind_days ?? '3,0').split(',').filter((x) => x !== '').map(Number);
+  const adults = S.users.filter((u) => u.active && u.role !== 'kid');
+  openModal(`<form id="billForm"><h2>${isNew ? 'New bill' : 'Edit bill'}</h2><div class="form2">
+    <div class="full"><label>Name</label><input name="name" value="${esc(b.name)}" required placeholder="Electric, rent, car insurance..."></div>
+    <div><label>Amount (${esc(S.settings.currency || '$')})</label><input name="amount" inputmode="decimal" value="${esc(centsInput(b.amount_cents))}" placeholder="0.00"></div>
+    <div><label>${isNew ? 'Next due date' : 'First due date'}</label><input type="date" name="start_date" value="${esc(b.start_date || ymd(new Date()))}" required></div>
+    <div><label>Repeats</label><select name="freq">${freqOpts(b.freq, true)}</select></div>
+    <div><label>Every</label><input type="number" min="1" name="interval" value="${esc(b.interval || 1)}"></div>
+    <div><label>Ends (optional)</label><input type="date" name="until" value="${esc(b.until)}"></div>
+    <div><label>Who pays / gets reminders</label><select name="assigned_to">${opts(adults.map((u) => [u.id, u.display_name]), b.assigned_to, 'All adults')}</select></div>
+    <div class="full"><label>Remind</label>${[[7, '1 week before'], [3, '3 days before'], [1, '1 day before'], [0, 'On the due day']].map(([v, t]) => `<label class="inline"><input type="checkbox" data-group="rd" name="rd" value="${v}" ${rd.includes(v) ? 'checked' : ''}>${t}</label>`).join('')}</div>
+    <div><label>Category</label><select name="category_id">${opts(S.cats.filter((c) => c.kind === 'expense').map((c) => [c.id, c.name]), b.category_id, '-')}</select></div>
+    <div><label>Paid from account</label><select name="account_id">${opts(S.accounts.map((a) => [a.id, a.name]), b.account_id, '-')}</select></div>
+    <div class="full"><label>Payment website (optional)</label><input name="url" value="${esc(b.url)}" placeholder="https://..."></div>
+    <div class="full"><label>Notes</label><textarea name="notes" rows="2">${esc(b.notes)}</textarea></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="autopay" ${b.autopay ? 'checked' : ''}> Autopay (marked paid by itself on the due day)</label>
+    <label class="inline"><input type="checkbox" name="private" ${b.private ? 'checked' : ''}> Private (only me)</label>
+    ${isNew ? '' : `<label class="inline"><input type="checkbox" name="active" ${b.active ? 'checked' : ''}> Active</label>`}</div></div>
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="billDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    const f = $('#billForm', sh);
+    f.onsubmit = async (ev) => {
+      ev.preventDefault(); const d = formData(f);
+      try {
+        const body = { name: d.name, amount_cents: toCents(d.amount), start_date: d.start_date, freq: d.freq, interval: Number(d.interval) || 1, until: d.until,
+          assigned_to: idOrNull(d.assigned_to), remind_days: d.rd.join(','), category_id: idOrNull(d.category_id), account_id: idOrNull(d.account_id),
+          url: d.url, notes: d.notes, autopay: d.autopay, private: d.private, active: isNew ? true : d.active };
+        await api(isNew ? 'POST' : 'PUT', '/api/bills' + (isNew ? '' : '/' + b.id), body); closeModal(); toast('Saved'); render();
+      } catch (err) { fail(err); }
+    };
+    const del = $('#billDel', sh);
+    if (del) del.onclick = async () => {
+      if (!confirm('Delete bill "' + b.name + '" and its payment history? Recorded expenses stay.')) return;
+      try { await api('DELETE', '/api/bills/' + b.id); closeModal(); toast('Deleted'); render(); } catch (err) { fail(err); }
+    };
+  });
+}
+async function payForm(id, occ) {
+  let dues;
+  try { dues = await api('GET', `/api/bills/dues?from=${occ}&to=${occ}`); } catch (e) { return fail(e); }
+  const d = dues.find((x) => x.bill_id === id) || { name: 'Bill', amount_cents: 0 };
+  if (d.paid) {
+    openModal(`<h2>${esc(d.name)}</h2><p>Due ${esc(fmtDate(occ))}. <span class="pill good">Paid</span> ${esc(fmtDate(d.paid_date))}, ${money(d.paid_cents)}.</p>
+      <div class="actions"><button class="danger left" id="unpay">Mark not paid</button><button data-action="close">Close</button></div>`, (sh) => {
+      $('#unpay', sh).onclick = async () => { try { await api('POST', `/api/bills/${id}/unpay`, { Occ: occ }); closeModal(); render(); } catch (e) { fail(e); } };
+    });
+    return;
+  }
+  openModal(`<form id="payForm"><h2>Pay ${esc(d.name)}</h2><p class="mute">Due ${esc(fmtDate(occ))}</p><div class="form2">
+    <div><label>Amount paid</label><input name="amount" inputmode="decimal" value="${esc(centsInput(d.amount_cents))}"></div>
+    <div><label>Paid on</label><input type="date" name="paid_date" value="${ymd(new Date())}"></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="record" checked> Also record it as an expense</label></div></div>
+    <div class="actions"><button type="button" data-action="close">Cancel</button><button class="primary">Mark paid</button></div></form>`, (sh) => {
+    $('#payForm', sh).onsubmit = async (ev) => {
+      ev.preventDefault(); const f = formData(ev.target);
+      try { await api('POST', `/api/bills/${id}/pay`, { occ, paid_date: f.paid_date, amount_cents: toCents(f.amount), record: f.record }); closeModal(); toast('Marked paid'); S.accounts = await api('GET', '/api/accounts'); render(); } catch (e) { fail(e); }
+    };
+  });
+}
+
+// ---------- money (transactions) ----------
+function monthBounds(m) { const s = new Date(m.getFullYear(), m.getMonth(), 1); const e = new Date(m.getFullYear(), m.getMonth() + 1, 0); return [ymd(s), ymd(e)]; }
+async function moneyView(el) {
+  if (!S.txMonth) S.txMonth = new Date();
+  const f = S.txFilter || (S.txFilter = { account: '', category: '', q: '' });
+  const [from, to] = monthBounds(S.txMonth);
+  const qs = new URLSearchParams({ from, to, account: f.account, category: f.category, q: f.q });
+  const txs = await api('GET', '/api/transactions?' + qs);
+  const inc = txs.filter((t) => t.amount_cents > 0).reduce((s, t) => s + t.amount_cents, 0);
+  const out = txs.filter((t) => t.amount_cents < 0).reduce((s, t) => s - t.amount_cents, 0);
+  el.innerHTML = `<div class="spread"><h1>Money</h1><div class="row"><button id="mPrev">&lsaquo;</button><b>${esc(S.txMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</b><button id="mNext">&rsaquo;</button>
+    <button class="primary" id="txAdd">+ Add</button></div></div>
+    <div class="card"><div class="row"><select id="fAcc" style="width:auto">${opts(S.accounts.map((a) => [a.id, a.name]), f.account, 'All accounts')}</select>
+      <select id="fCat" style="width:auto">${opts(S.cats.map((c) => [c.id, c.name]), f.category, 'All categories')}</select>
+      <input id="fQ" placeholder="Search payee or notes" value="${esc(f.q)}" style="width:auto;flex:1;min-width:140px">
+      <a class="btn" href="/api/transactions.csv?${qs}" download>Export CSV</a></div></div>
+    <div class="stats"><div class="stat"><small>In</small><b class="good">${money(inc)}</b></div><div class="stat"><small>Out</small><b>${money(out)}</b></div><div class="stat"><small>Net</small><b class="${inc - out < 0 ? 'bad' : 'good'}">${money(inc - out, true)}</b></div></div>
+    <div class="card scroll"><table><tr><th>Date</th><th>Payee</th><th>Category</th><th>Account</th><th>By</th><th class="num">Amount</th></tr>
+    ${txs.map((t) => `<tr class="click" data-tx="${t.id}"><td>${esc(fmtDate(t.date, { month: 'short', day: 'numeric' }))}</td><td>${esc(t.payee)} ${t.private ? '<span class="pill">private</span>' : ''}${t.bill_id ? ' <span class="pill">bill</span>' : ''}<br><small>${esc(t.notes)}</small></td>
+      <td>${esc(catName(t.category_id))}</td><td>${esc(accName(t.account_id))}</td><td>${esc(userName(t.user_id))}</td><td class="num ${t.amount_cents > 0 ? 'good' : ''}">${money(t.amount_cents, true)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No transactions this month.</td></tr>'}</table></div>`;
+  const shift = (n) => { S.txMonth = new Date(S.txMonth.getFullYear(), S.txMonth.getMonth() + n, 1); moneyView(el); };
+  $('#mPrev').onclick = () => shift(-1); $('#mNext').onclick = () => shift(1);
+  $('#txAdd').onclick = () => txForm({});
+  $('#fAcc').onchange = (e) => { f.account = e.target.value; moneyView(el); };
+  $('#fCat').onchange = (e) => { f.category = e.target.value; moneyView(el); };
+  $('#fQ').onchange = (e) => { f.q = e.target.value; moneyView(el); };
+  el.querySelectorAll('[data-tx]').forEach((r) => (r.onclick = () => txForm(txs.find((t) => t.id === Number(r.dataset.tx)))));
+}
+function txForm(t) {
+  const isNew = !t.id; const type = t.amount_cents > 0 ? 'income' : 'expense';
+  openModal(`<form id="txForm"><h2>${isNew ? 'Add transaction' : 'Edit transaction'}</h2>
+    <div class="tabs"><label class="inline"><input type="radio" name="type" value="expense" ${type === 'expense' ? 'checked' : ''}> Money out</label><label class="inline"><input type="radio" name="type" value="income" ${type === 'income' ? 'checked' : ''}> Money in</label></div>
+    <div class="form2"><div><label>Amount</label><input name="amount" inputmode="decimal" value="${esc(centsInput(t.amount_cents))}" required></div>
+    <div><label>Date</label><input type="date" name="date" value="${esc(t.date || ymd(new Date()))}" required></div>
+    <div class="full"><label>Payee / source</label><input name="payee" value="${esc(t.payee)}" list="payees"></div>
+    <div><label>Category</label><select name="category_id">${opts(S.cats.map((c) => [c.id, c.name + (c.kind === 'income' ? ' (income)' : '')]), t.category_id, '-')}</select></div>
+    <div><label>Account</label><select name="account_id">${opts(S.accounts.filter((a) => !a.archived || a.id === t.account_id).map((a) => [a.id, a.name]), t.account_id ?? (S.accounts[0] || {}).id, '-')}</select></div>
+    <div class="full"><label>Notes</label><input name="notes" value="${esc(t.notes)}"></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="private" ${t.private ? 'checked' : ''}> Private (only me)</label></div></div>
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="txDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    $('#txForm', sh).onsubmit = async (ev) => {
+      ev.preventDefault(); const d = formData(ev.target);
+      try {
+        let c = Math.abs(toCents(d.amount)); if (d.type === 'expense') c = -c;
+        await api(isNew ? 'POST' : 'PUT', '/api/transactions' + (isNew ? '' : '/' + t.id), { date: d.date, amount_cents: c, payee: d.payee, category_id: idOrNull(d.category_id), account_id: idOrNull(d.account_id), notes: d.notes, private: d.private });
+        closeModal(); toast('Saved'); S.accounts = await api('GET', '/api/accounts'); render();
+      } catch (err) { fail(err); }
+    };
+    const del = $('#txDel', sh);
+    if (del) del.onclick = async () => { if (!confirm('Delete this transaction?')) return; try { await api('DELETE', '/api/transactions/' + t.id); closeModal(); render(); } catch (e) { fail(e); } };
+  });
+}
+
+// ---------- budget ----------
+async function budget(el) {
+  if (!S.budgetMonth) S.budgetMonth = new Date();
+  const s = await api('GET', '/api/summary?month=' + ym(S.budgetMonth));
+  const exp = s.categories.filter((c) => c.kind === 'expense'); const inc = s.categories.filter((c) => c.kind === 'income');
+  const row = (c) => {
+    const pct = c.budget_cents ? Math.min(100, Math.round((c.spent_cents / c.budget_cents) * 100)) : 0;
+    const cls = c.budget_cents && c.spent_cents > c.budget_cents ? 'over' : pct >= 85 ? 'near' : '';
+    return `<tr><td><b>${esc(c.name)}</b>${c.budget_cents ? `<div class="bar ${cls}"><i style="width:${pct}%"></i></div>` : ''}</td><td class="num">${money(c.spent_cents)}</td>
+      <td class="num"><input data-budget="${c.id}" value="${esc(centsInput(c.budget_cents))}" placeholder="no budget" inputmode="decimal" style="width:7.5rem;text-align:right"></td>
+      <td class="num ${c.budget_cents && c.budget_cents - c.spent_cents < 0 ? 'bad' : ''}">${c.budget_cents ? money(c.budget_cents - c.spent_cents) : ''}</td><td><button class="small" data-cat="${c.id}">&#9998;</button></td></tr>`;
+  };
+  el.innerHTML = `<div class="spread"><h1>Budget</h1><div class="row"><button id="bPrev">&lsaquo;</button><b>${esc(S.budgetMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }))}</b><button id="bNext">&rsaquo;</button><button id="catAdd">+ Category</button></div></div>
+    <div class="stats"><div class="stat"><small>Budgeted</small><b>${money(s.budget_cents)}</b></div><div class="stat"><small>Spent in budgeted categories</small><b>${money(s.budget_spent_cents)}</b></div>
+      <div class="stat"><small>Budget left</small><b class="${s.budget_left_cents < 0 ? 'bad' : 'good'}">${money(s.budget_left_cents)}</b></div><div class="stat"><small>All spending</small><b>${money(s.expense_cents)}</b></div><div class="stat"><small>Income</small><b class="good">${money(s.income_cents)}</b></div></div>
+    <div class="card scroll"><h2>Spending</h2><p class="mute">Type a monthly budget and press Enter or leave the box. It applies to every month.</p><table><tr><th>Category</th><th class="num">Spent</th><th class="num">Budget / month</th><th class="num">Left</th><th></th></tr>${exp.map(row).join('')}
+    ${s.uncategorised_cents ? `<tr><td class="mute">No category</td><td class="num">${money(-s.uncategorised_cents)}</td><td></td><td></td><td></td></tr>` : ''}</table></div>
+    <div class="card"><h2>Income</h2><ul class="list">${inc.map((c) => `<li><span class="grow">${esc(c.name)}</span><b class="good">${money(c.spent_cents)}</b><button class="small" data-cat="${c.id}">&#9998;</button></li>`).join('')}</ul></div>`;
+  const shift = (n) => { S.budgetMonth = new Date(S.budgetMonth.getFullYear(), S.budgetMonth.getMonth() + n, 1); budget(el); };
+  $('#bPrev').onclick = () => shift(-1); $('#bNext').onclick = () => shift(1);
+  $('#catAdd').onclick = () => catForm({ kind: 'expense' });
+  el.querySelectorAll('[data-budget]').forEach((inp) => (inp.onchange = async () => {
+    const c = S.cats.find((x) => x.id === Number(inp.dataset.budget));
+    try { await api('PUT', '/api/categories/' + c.id, { ...c, budget_cents: toCents(inp.value) }); S.cats = await api('GET', '/api/categories'); toast('Budget saved'); budget(el); } catch (e) { fail(e); }
+  }));
+  el.querySelectorAll('[data-cat]').forEach((b) => (b.onclick = () => catForm(S.cats.find((x) => x.id === Number(b.dataset.cat)))));
+}
+function catForm(c) {
+  const isNew = !c.id;
+  openModal(`<form id="catForm"><h2>${isNew ? 'New category' : 'Edit category'}</h2><label>Name</label><input name="name" value="${esc(c.name)}" required>
+    <label>Kind</label><select name="kind">${opts([['expense', 'Spending'], ['income', 'Income']], c.kind)}</select>
+    <label>Monthly budget</label><input name="budget" inputmode="decimal" value="${esc(centsInput(c.budget_cents))}">
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="catDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    $('#catForm', sh).onsubmit = async (ev) => {
+      ev.preventDefault(); const d = formData(ev.target);
+      try { await api(isNew ? 'POST' : 'PUT', '/api/categories' + (isNew ? '' : '/' + c.id), { name: d.name, kind: d.kind, budget_cents: toCents(d.budget), color: c.color || '' }); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); }
+    };
+    const del = $('#catDel', sh);
+    if (del) del.onclick = async () => { if (!confirm('Delete category "' + c.name + '"? Its transactions keep no category.')) return; try { await api('DELETE', '/api/categories/' + c.id); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); } };
+  });
+}
+
+// ---------- accounts ----------
+const ACC_TYPES = [['checking', 'Checking'], ['savings', 'Savings'], ['credit', 'Credit card'], ['cash', 'Cash'], ['loan', 'Loan'], ['investment', 'Investment'], ['other', 'Other']];
+async function accounts(el) {
+  S.accounts = await api('GET', '/api/accounts');
+  const total = S.accounts.filter((a) => !a.archived).reduce((s, a) => s + a.balance_cents, 0);
+  el.innerHTML = `<div class="spread"><h1>Accounts</h1><button class="primary" id="accAdd">+ Account</button></div>
+    <div class="stats"><div class="stat"><small>Total of visible accounts</small><b class="${total < 0 ? 'bad' : ''}">${money(total)}</b></div></div>
+    <div class="card"><p class="mute">Balances are the opening balance plus every transaction recorded here. Credit cards and loans: enter what you owe as a negative opening balance.</p><ul class="list">
+    ${S.accounts.map((a) => `<li class="click" data-acc="${a.id}"><span class="grow"><b>${esc(a.name)}</b> ${a.private ? '<span class="pill">private</span>' : ''}${a.archived ? ' <span class="pill">archived</span>' : ''}<br><small>${esc((ACC_TYPES.find((t) => t[0] === a.type) || [, a.type])[1])} &middot; ${esc(userName(a.owner_id))}</small></span><b class="${a.balance_cents < 0 ? 'bad' : ''}">${money(a.balance_cents)}</b></li>`).join('') || '<li class="empty">Add your checking, savings and cards.</li>'}</ul></div>`;
+  $('#accAdd').onclick = () => accForm({});
+  el.querySelectorAll('[data-acc]').forEach((r) => (r.onclick = () => accForm(S.accounts.find((a) => a.id === Number(r.dataset.acc)))));
+}
+function accForm(a) {
+  const isNew = !a.id;
+  openModal(`<form id="accForm"><h2>${isNew ? 'New account' : 'Edit account'}</h2><div class="form2">
+    <div class="full"><label>Name</label><input name="name" value="${esc(a.name)}" required placeholder="Joint checking"></div>
+    <div><label>Type</label><select name="type">${opts(ACC_TYPES, a.type || 'checking')}</select></div>
+    <div><label>Opening balance</label><input name="opening" inputmode="decimal" value="${a.opening_cents ? esc((a.opening_cents / 100).toFixed(2)) : ''}" placeholder="0.00"></div>
+    <div class="full"><label>Notes</label><input name="notes" value="${esc(a.notes)}" placeholder="No full account numbers here, please"></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="private" ${a.private ? 'checked' : ''}> Private (only me)</label><label class="inline"><input type="checkbox" name="archived" ${a.archived ? 'checked' : ''}> Archived</label></div></div>
+    <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="accDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
+    $('#accForm', sh).onsubmit = async (ev) => {
+      ev.preventDefault(); const d = formData(ev.target);
+      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived }); closeModal(); render(); } catch (e) { fail(e); }
+    };
+    const del = $('#accDel', sh);
+    if (del) del.onclick = async () => { if (!confirm('Delete account "' + a.name + '"? Its transactions stay, with no account.')) return; try { await api('DELETE', '/api/accounts/' + a.id); closeModal(); render(); } catch (e) { fail(e); } };
+  });
+}
+
+// ---------- alerts ----------
+async function alerts(el) {
+  const r = await api('GET', '/api/notifications?limit=200');
+  el.innerHTML = `<div class="spread"><h1>Alerts</h1><div class="row"><button id="nRead">Mark all read</button><button id="nClear">Clear read</button></div></div>
+    <div class="card"><ul class="list">${r.items.map((n) => `<li><span class="dot" style="background:${n.read ? 'var(--line)' : 'var(--accent)'}"></span><span class="grow"><b>${esc(n.title)}</b><br><small>${esc(n.body)}</small><br><small>${esc(new Date(n.created).toLocaleString())}${n.delivery ? ' &middot; sent: ' + esc(n.delivery) : ''}</small></span>${n.read ? '' : `<button class="small" data-read="${n.id}">Read</button>`}</li>`).join('') || '<li class="empty">No alerts yet. Reminders for bills and appointments show up here.</li>'}</ul></div>`;
+  $('#nRead').onclick = async () => { await api('POST', '/api/notifications/read', { ID: 0 }); setBadge(0); alerts(el); };
+  $('#nClear').onclick = async () => { await api('POST', '/api/notifications/clear'); alerts(el); };
+  el.querySelectorAll('[data-read]').forEach((b) => (b.onclick = async () => { await api('POST', '/api/notifications/read', { ID: Number(b.dataset.read) }); setBadge(Math.max(0, r.unread - 1)); alerts(el); }));
+}
+
+// ---------- settings ----------
+async function settings(el) {
+  const tab = S.settingsTab || 'me';
+  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['backup', 'Backup']] : []);
+  el.innerHTML = `<h1>Settings</h1><div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="setBody"></div>`;
+  el.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { S.settingsTab = b.dataset.tab; settings(el); }));
+  const body = $('#setBody');
+  await ({ me: setMe, notify: setNotify, members: setMembers, household: setHousehold, backup: setBackup }[tab])(body);
+}
+async function setMe(el) {
+  const me = await api('GET', '/api/me');
+  el.innerHTML = `<div class="grid"><form class="card" id="meForm"><h2>Profile</h2><label>Name</label><input name="display_name" value="${esc(me.display_name)}" required>
+    <label>My color on the calendar</label><input type="color" name="color" value="${esc(me.color)}"><p class="mute">Signed in as <b>${esc(me.username)}</b> (${esc(me.role)})</p><button class="primary">Save</button></form>
+    <form class="card" id="pwForm"><h2>Password</h2><label>Current password</label><input type="password" name="cur" autocomplete="current-password" required>
+    <label>New password (8+ characters)</label><input type="password" name="new" autocomplete="new-password" minlength="8" required><button class="primary" style="margin-top:.6rem">Change password</button></form>
+    ${inWindowApp() ? '<div class="card"><h2>This Windows app</h2><p class="mute">Switch between hosting the data on this PC and connecting to the Unraid server.</p><button data-action="switch-server">Change server</button></div>' : ''}</div>`;
+  $('#meForm').onsubmit = async (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    try { S.me = await api('PUT', '/api/me', { ...me, display_name: d.display_name, color: d.color }); $('#whoName').textContent = S.me.display_name; S.users = await api('GET', '/api/users'); toast('Saved'); } catch (err) { fail(err); }
+  };
+  $('#pwForm').onsubmit = async (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    try { await api('POST', '/api/me/password', { Current: d.cur, New: d.new }); e.target.reset(); toast('Password changed'); } catch (err) { fail(err); }
+  };
+}
+async function setNotify(el) {
+  const [me, devices, ics] = await Promise.all([api('GET', '/api/me'), api('GET', '/api/me/devices'), api('GET', '/api/me/ics')]);
+  const ch = (me.channels || '').split(',');
+  const icsURL = location.origin + ics.path;
+  const secure = window.isSecureContext;
+  el.innerHTML = `<form class="card" id="nForm"><h2>Where should my reminders go?</h2>
+    <label class="inline"><input type="checkbox" data-group="ch" name="ch" value="inapp" checked disabled> Bell in this app (always on)</label><br>
+    <label class="inline"><input type="checkbox" data-group="ch" name="ch" value="device" ${ch.includes('device') ? 'checked' : ''}> Windows pop-ups and browser pop-ups</label>
+    <div class="form2">
+    <div class="full"><label class="inline"><input type="checkbox" data-group="ch" name="ch" value="ntfy" ${ch.includes('ntfy') ? 'checked' : ''}> <b>Phone push with ntfy</b> (free)</label>
+      <input name="ntfy_topic" value="${esc(me.ntfy_topic)}" placeholder="a hard-to-guess topic, e.g. smith-mom-7f3k2">
+      <small>Install the ntfy app (Android or iPhone), tap +, and subscribe to this same topic. Anyone who knows a topic on ntfy.sh can read it, so make it hard to guess.</small></div>
+    <div class="full"><label class="inline"><input type="checkbox" data-group="ch" name="ch" value="email" ${ch.includes('email') ? 'checked' : ''}> <b>Email</b></label><input name="email" type="email" value="${esc(me.email)}" placeholder="you@example.com"></div>
+    <div class="full"><label class="inline"><input type="checkbox" data-group="ch" name="ch" value="sms" ${ch.includes('sms') ? 'checked' : ''}> <b>Text message</b></label>
+      <div class="form2"><div><label>Mobile number (for Twilio, +15551234567)</label><input name="phone" value="${esc(me.phone)}"></div>
+      <div><label>or carrier email-to-text address</label><input name="sms_gateway" value="${esc(me.sms_gateway)}" placeholder="5551234567@vtext.com"></div></div>
+      <small>Texts need either Twilio (paid, set up by the admin) or a carrier email-to-text address plus email set up by the admin. AT&amp;T and T-Mobile have shut email-to-text down; Verizon's (vtext.com) ends March 31, 2027. ntfy is the reliable free choice.</small></div>
+    <div class="full"><label class="inline"><input type="checkbox" data-group="ch" name="ch" value="webhook" ${ch.includes('webhook') ? 'checked' : ''}> <b>Discord or other webhook</b></label><input name="webhook_url" value="${esc(me.webhook_url)}" placeholder="https://discord.com/api/webhooks/..."></div>
+    </div><div class="actions"><button type="button" id="nTest">Send me a test</button><button class="primary">Save</button></div></form>
+    <div class="grid"><div class="card"><h2>Browser pop-ups</h2>${inWindowApp() ? '<p>This Windows app shows Windows notifications by itself, even when the window is closed.</p>' :
+      secure ? `<p>Status: <b>${'Notification' in window ? esc(Notification.permission) : 'not supported'}</b>. Pop-ups show while this page is open in a tab.</p><button id="nPerm">Allow pop-ups in this browser</button>` :
+      '<p class="warn">Browsers only allow pop-ups on https:// pages (or localhost). Open Household Hub through an HTTPS reverse proxy to use them here, or use ntfy / the Windows app.</p>'}</div>
+    <div class="card"><h2>Windows PCs getting my pop-ups</h2><ul class="list">${devices.map((d) => `<li><span class="grow">${esc(d.label)}<br><small>last seen ${esc(d.last_seen ? new Date(d.last_seen).toLocaleString() : 'never')}</small></span><button class="small danger" data-dev="${esc(d.id)}">Remove</button></li>`).join('') || '<li class="empty">None. Install the Windows app and sign in to add this PC.</li>'}</ul></div>
+    <div class="card"><h2>Calendar feed</h2><p class="mute">Subscribe from your phone or Outlook calendar to see events and bill dates there (read-only). Keep this link private.</p><code>${esc(icsURL)}</code>
+      <div class="actions"><button id="icsCopy">Copy link</button><button id="icsRot" class="danger">New link</button></div></div></div>`;
+  $('#nForm').onsubmit = async (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    try { S.me = await api('PUT', '/api/me', { ...me, channels: ['inapp'].concat(d.ch).join(','), ntfy_topic: d.ntfy_topic, email: d.email, phone: d.phone, sms_gateway: d.sms_gateway, webhook_url: d.webhook_url }); toast('Saved'); } catch (err) { fail(err); }
+  };
+  $('#nTest').onclick = async () => { try { const r = await api('POST', '/api/me/test-notify'); toast('Test sent: ' + r.result, /:(?! ok)/.test(r.result)); poll(); } catch (e) { fail(e); } };
+  const perm = $('#nPerm'); if (perm) perm.onclick = async () => { await Notification.requestPermission(); setNotify(el); };
+  el.querySelectorAll('[data-dev]').forEach((b) => (b.onclick = async () => { if (!confirm('Stop pop-ups on this PC?')) return; await api('DELETE', '/api/me/devices/' + b.dataset.dev); setNotify(el); }));
+  $('#icsCopy').onclick = () => navigator.clipboard.writeText(icsURL).then(() => toast('Copied'), () => toast('Copy it by hand', true));
+  $('#icsRot').onclick = async () => { if (!confirm('Make a new link? Calendars using the old one stop updating.')) return; await api('POST', '/api/me/ics/rotate'); setNotify(el); };
+}
+async function setMembers(el) {
+  const users = await api('GET', '/api/users');
+  const roles = [['admin', 'Admin (everything)'], ['adult', 'Adult (money + calendar)'], ['kid', 'Kid (calendar only)']];
+  el.innerHTML = `<div class="grid"><div class="card"><h2>Household members</h2><ul class="list">${users.map((u) => `<li><span class="dot" style="background:${esc(u.color)}"></span><span class="grow"><b>${esc(u.display_name)}</b> <small>${esc(u.username)}</small><br>
+      <select data-role="${u.id}" style="width:auto">${opts(roles, u.role)}</select> <label class="inline"><input type="checkbox" data-active="${u.id}" ${u.active ? 'checked' : ''}> active</label></span><button class="small" data-pw="${u.id}">Reset password</button></li>`).join('')}</ul></div>
+    <form class="card" id="addUser"><h2>Add a member</h2><label>Name</label><input name="display_name" required><label>Username</label><input name="username" required autocomplete="off">
+      <label>Starting password (8+; they can change it)</label><input name="password" type="password" minlength="8" required autocomplete="new-password">
+      <label>Role</label><select name="role">${opts(roles, 'adult')}</select><label>Color</label><input type="color" name="color" value="#2bb673"><button class="primary" style="margin-top:.6rem">Add</button></form></div>`;
+  const save = async (id) => {
+    const role = $(`[data-role="${id}"]`).value; const active = $(`[data-active="${id}"]`).checked;
+    try { await api('PUT', '/api/users/' + id, { Role: role, Active: active }); toast('Saved'); S.users = await api('GET', '/api/users'); } catch (e) { fail(e); setMembers(el); }
+  };
+  el.querySelectorAll('[data-role]').forEach((s) => (s.onchange = () => save(s.dataset.role)));
+  el.querySelectorAll('[data-active]').forEach((s) => (s.onchange = () => save(s.dataset.active)));
+  el.querySelectorAll('[data-pw]').forEach((b) => (b.onclick = () => {
+    const u = users.find((x) => x.id === Number(b.dataset.pw));
+    openModal(`<form id="rpw"><h2>New password for ${esc(u.display_name)}</h2><input type="password" name="pw" minlength="8" required autocomplete="new-password"><div class="actions"><button type="button" data-action="close">Cancel</button><button class="primary">Set</button></div></form>`, (sh) => {
+      $('#rpw', sh).onsubmit = async (e) => { e.preventDefault(); try { await api('PUT', '/api/users/' + u.id, { Role: u.role, Active: u.active, Password: e.target.pw.value }); closeModal(); toast('Password set'); } catch (err) { fail(err); } };
+    });
+  }));
+  $('#addUser').onsubmit = async (e) => {
+    e.preventDefault(); const d = formData(e.target);
+    try { await api('POST', '/api/users', { Username: d.username, DisplayName: d.display_name, Password: d.password, Role: d.role, Color: d.color }); S.users = await api('GET', '/api/users'); toast('Added'); setMembers(el); } catch (err) { fail(err); }
+  };
+}
+async function setHousehold(el) {
+  const s = await api('GET', '/api/settings');
+  const f = (k, label, type, ph) => `<div><label>${label}</label><input name="${k}" type="${type || 'text'}" value="${esc(s[k])}" placeholder="${esc(ph || '')}" autocomplete="off"></div>`;
+  el.innerHTML = `<form id="hhForm"><div class="card"><h2>General</h2><div class="form2">${f('household_name', 'Household name')}${f('currency', 'Currency symbol')}
+    <div><label>Week starts on</label><select name="week_start">${opts([['0', 'Sunday'], ['1', 'Monday']], s.week_start)}</select></div>
+    ${f('bill_remind_hour', 'Bill reminders go out at (hour, 0-23)', 'number')}${f('allday_remind_hour', 'All-day event reminders at (hour)', 'number')}
+    <div><label>Overdue bill reminders</label><select name="overdue_reminders">${opts([['1', 'On (day after due)'], ['0', 'Off']], s.overdue_reminders)}</select></div>
+    <div class="full">${f('base_url', 'Address people use to open this app (for links in messages)', 'url', 'http://192.168.1.144:8095')}</div></div></div>
+    <div class="card"><h2>ntfy (phone push)</h2><div class="form2">${f('ntfy_server', 'ntfy server', 'url', 'https://ntfy.sh')}${f('ntfy_token', 'Access token (only for a protected server)', 'password')}</div></div>
+    <div class="card"><h2>Email (SMTP)</h2><p class="mute">For Gmail use smtp.gmail.com, port 587, your address, and an App Password (Google account, Security, App passwords). Passwords are stored on this server and never shown again.</p><div class="form2">
+    ${f('smtp_host', 'SMTP server', 'text', 'smtp.gmail.com')}${f('smtp_port', 'Port (587 or 465)', 'number')}${f('smtp_user', 'Username')}${f('smtp_pass', 'Password / app password', 'password')}${f('smtp_from', 'From address')}</div></div>
+    <div class="card"><h2>Text messages (Twilio, optional)</h2><p class="mute">Twilio charges per text and US numbers must be registered (toll-free verification or A2P 10DLC) before texts are delivered. Leave empty to use carrier email-to-text instead.</p><div class="form2">
+    ${f('twilio_sid', 'Account SID')}${f('twilio_token', 'Auth token', 'password')}${f('twilio_from', 'From number', 'text', '+15551234567')}</div></div>
+    <div class="card"><h2>Household webhook (optional)</h2><p class="mute">Every shared reminder is also posted here once, for example a family Discord channel.</p>${f('household_webhook', 'Webhook URL', 'password', 'https://discord.com/api/webhooks/...')}</div>
+    <div class="row end"><button class="primary">Save household settings</button></div></form>`;
+  $('#hhForm').onsubmit = async (e) => {
+    e.preventDefault();
+    try { const r = await api('PUT', '/api/settings', formData(e.target)); S.settings = { ...S.settings, household_name: r.household_name, currency: r.currency, week_start: r.week_start }; $('#hhName').textContent = r.household_name; toast('Saved'); } catch (err) { fail(err); }
+  };
+}
+async function setBackup(el) {
+  el.innerHTML = `<div class="card"><h2>Backup</h2><p>Download a copy of everything (one SQLite file). On Unraid the data also lives in the app's appdata folder, which your usual appdata backup covers.</p>
+    <a class="btn primary" href="/api/backup" download>Download backup</a><h3>Restore</h3><p class="mute">Stop the app, replace <code>household.db</code> in the data folder with the backup file (delete any household.db-wal and -shm files next to it), then start the app.</p></div>`;
+}
+
+boot();

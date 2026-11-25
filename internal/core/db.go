@@ -1,0 +1,232 @@
+// Package core holds the data model, storage, recurrence and reminder logic of Household Hub.
+// Everything is in one SQLite file. Money is stored as integer cents.
+package core
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// Store wraps the database.
+type Store struct {
+	DB   *sql.DB
+	Path string
+	mu   sync.Mutex // serialises writes that read-then-write
+	Now  func() time.Time
+}
+
+var migrations = []string{
+	// 1: base schema
+	`CREATE TABLE users (
+		id INTEGER PRIMARY KEY,
+		username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		display_name TEXT NOT NULL,
+		color TEXT NOT NULL DEFAULT '#4f7cff',
+		role TEXT NOT NULL DEFAULT 'adult',
+		pass_hash TEXT NOT NULL,
+		email TEXT NOT NULL DEFAULT '',
+		phone TEXT NOT NULL DEFAULT '',
+		sms_gateway TEXT NOT NULL DEFAULT '',
+		ntfy_topic TEXT NOT NULL DEFAULT '',
+		webhook_url TEXT NOT NULL DEFAULT '',
+		channels TEXT NOT NULL DEFAULT 'inapp,device',
+		ics_token TEXT NOT NULL DEFAULT '',
+		active INTEGER NOT NULL DEFAULT 1,
+		created TEXT NOT NULL
+	);
+	CREATE TABLE sessions (
+		token_hash TEXT PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL DEFAULT 'web',
+		label TEXT NOT NULL DEFAULT '',
+		created TEXT NOT NULL,
+		expires TEXT NOT NULL,
+		last_seen TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+	CREATE TABLE accounts (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		type TEXT NOT NULL DEFAULT 'checking',
+		opening_cents INTEGER NOT NULL DEFAULT 0,
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		archived INTEGER NOT NULL DEFAULT 0,
+		notes TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE categories (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		kind TEXT NOT NULL DEFAULT 'expense',
+		budget_cents INTEGER NOT NULL DEFAULT 0,
+		color TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE transactions (
+		id INTEGER PRIMARY KEY,
+		date TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+		category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+		payee TEXT NOT NULL DEFAULT '',
+		notes TEXT NOT NULL DEFAULT '',
+		user_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		bill_id INTEGER,
+		created TEXT NOT NULL
+	);
+	CREATE INDEX tx_date ON transactions(date);
+	CREATE TABLE bills (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL DEFAULT 0,
+		category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+		account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+		start_date TEXT NOT NULL,
+		freq TEXT NOT NULL DEFAULT 'monthly',
+		interval INTEGER NOT NULL DEFAULT 1,
+		until TEXT NOT NULL DEFAULT '',
+		autopay INTEGER NOT NULL DEFAULT 0,
+		remind_days TEXT NOT NULL DEFAULT '3,0',
+		assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		url TEXT NOT NULL DEFAULT '',
+		notes TEXT NOT NULL DEFAULT '',
+		active INTEGER NOT NULL DEFAULT 1
+	);
+	CREATE TABLE bill_payments (
+		id INTEGER PRIMARY KEY,
+		bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+		occ_date TEXT NOT NULL,
+		paid_date TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		user_id INTEGER NOT NULL REFERENCES users(id),
+		transaction_id INTEGER,
+		UNIQUE(bill_id, occ_date)
+	);
+	CREATE TABLE events (
+		id INTEGER PRIMARY KEY,
+		title TEXT NOT NULL,
+		start_at TEXT NOT NULL,
+		end_at TEXT NOT NULL DEFAULT '',
+		all_day INTEGER NOT NULL DEFAULT 0,
+		location TEXT NOT NULL DEFAULT '',
+		notes TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL DEFAULT 'appointment',
+		freq TEXT NOT NULL DEFAULT 'none',
+		interval INTEGER NOT NULL DEFAULT 1,
+		until TEXT NOT NULL DEFAULT '',
+		remind_minutes TEXT NOT NULL DEFAULT '60',
+		members TEXT NOT NULL DEFAULT '',
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		color TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE notifications (
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		title TEXT NOT NULL,
+		body TEXT NOT NULL DEFAULT '',
+		link TEXT NOT NULL DEFAULT '',
+		created TEXT NOT NULL,
+		read INTEGER NOT NULL DEFAULT 0,
+		delivery TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX notif_user ON notifications(user_id, id);
+	CREATE TABLE sent_log (
+		kind TEXT NOT NULL,
+		item_id INTEGER NOT NULL,
+		occ TEXT NOT NULL,
+		lead TEXT NOT NULL,
+		user_id INTEGER NOT NULL,
+		sent TEXT NOT NULL,
+		PRIMARY KEY(kind, item_id, occ, lead, user_id)
+	);`,
+}
+
+// Open opens (and creates or migrates) the database at path.
+func Open(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1) // SQLite: one writer; keeps WAL simple and avoids SQLITE_BUSY
+	s := &Store{DB: db, Path: path, Now: time.Now}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) migrate() error {
+	var v int
+	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	for i := v; i < len(migrations); i++ {
+		tx, err := s.DB.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if v == 0 {
+		return s.seedCategories()
+	}
+	return nil
+}
+
+func (s *Store) seedCategories() error {
+	exp := []string{"Housing", "Utilities", "Groceries", "Dining", "Transportation", "Insurance", "Health", "Kids", "Pets", "Subscriptions", "Entertainment", "Clothing", "Gifts", "Debt", "Savings", "Other"}
+	inc := []string{"Paycheck", "Benefits", "Other income"}
+	for _, n := range exp {
+		if _, err := s.DB.Exec(`INSERT OR IGNORE INTO categories(name,kind) VALUES(?, 'expense')`, n); err != nil {
+			return err
+		}
+	}
+	for _, n := range inc {
+		if _, err := s.DB.Exec(`INSERT OR IGNORE INTO categories(name,kind) VALUES(?, 'income')`, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.DB.Close() }
+
+// Backup writes a consistent copy of the database to dst.
+func (s *Store) Backup(dst string) error {
+	os.Remove(dst)
+	_, err := s.DB.Exec(`VACUUM INTO ?`, dst)
+	return err
+}
+
+func (s *Store) nowStr() string { return s.Now().Format(time.RFC3339) }
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

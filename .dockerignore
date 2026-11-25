@@ -1,0 +1,7 @@
+*.exe
+dist/
+tools/
+.git/
+*.db
+*.db-wal
+*.db-shm
