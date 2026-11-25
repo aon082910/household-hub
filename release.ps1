@@ -1,7 +1,7 @@
-# Releases one version of Household Hub: tests, version bump, commit, tag, push, Docker image, Unraid template.
+﻿# Releases one version of Household Hub: tests, version bump, commit, tag, push, Docker image, Unraid template.
 #   .\release.ps1 -Version 1.3.0 -Notes "short change note"
 param([Parameter(Mandatory)][string]$Version, [Parameter(Mandatory)][string]$Notes)
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'  # native tools write progress to stderr; exit codes are checked instead
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $here
 $main = Join-Path $here 'cmd\hhub\main.go'

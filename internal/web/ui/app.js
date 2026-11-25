@@ -485,16 +485,18 @@ async function moneyView(el) {
       <input id="fQ" placeholder="Search payee or notes" value="${esc(f.q)}" style="width:auto;flex:1;min-width:140px">
       <a class="btn" href="/api/transactions.csv?${qs}" download>Export CSV</a></div></div>
     <div class="stats"><div class="stat"><small>In</small><b class="good">${money(inc)}</b></div><div class="stat"><small>Out</small><b>${money(out)}</b></div><div class="stat"><small>Net</small><b class="${inc - out < 0 ? 'bad' : 'good'}">${money(inc - out, true)}</b></div></div>
-    <div class="card scroll"><table><tr><th>Date</th><th>Payee</th><th>Category</th><th>Account</th><th>By</th><th class="num">Amount</th></tr>
-    ${txs.map((t) => `<tr class="click" data-tx="${t.id}"><td>${esc(fmtDate(t.date, { month: 'short', day: 'numeric' }))}</td><td>${esc(t.payee)} ${t.private ? '<span class="pill">private</span>' : ''}${t.bill_id ? ' <span class="pill">bill</span>' : ''}${t.transfer ? ' <span class="pill">transfer</span>' : ''}${t.source && t.source !== 'manual' ? ` <span class="pill">${esc(t.source)}</span>` : ''}<br><small>${esc(t.notes)}</small></td>
-      <td>${esc(catName(t.category_id))}</td><td>${esc(accName(t.account_id))}</td><td>${esc(userName(t.user_id))}</td><td class="num ${t.amount_cents > 0 ? 'good' : ''}">${money(t.amount_cents, true)}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No transactions this month.</td></tr>'}</table></div>`;
+    <div id="bulkBar"></div>
+    <div class="card scroll"><table><tr><th><input type="checkbox" id="selAll" title="Select all"></th><th>Date</th><th>Payee</th><th>Category</th><th>Account</th><th>By</th><th class="num">Amount</th></tr>
+    ${txs.map((t) => `<tr class="click" data-tx="${t.id}"><td><input type="checkbox" data-sel="${t.id}"></td><td>${esc(fmtDate(t.date, { month: 'short', day: 'numeric' }))}</td><td>${esc(t.payee)} ${t.private ? '<span class="pill">private</span>' : ''}${t.business ? ' <span class="pill">business</span>' : ''}${t.split ? ' <span class="pill">split</span>' : ''}${t.receipts ? ' <span class="pill">&#128206; ' + t.receipts + '</span>' : ''}${t.bill_id ? ' <span class="pill">bill</span>' : ''}${t.transfer ? ' <span class="pill">transfer</span>' : ''}${t.source && t.source !== 'manual' ? ` <span class="pill">${esc(t.source)}</span>` : ''}<br><small>${esc(t.notes)}</small></td>
+      <td>${t.split ? '<i>split</i>' : esc(catName(t.category_id))}</td><td>${esc(accName(t.account_id))}</td><td>${esc(userName(t.user_id))}</td><td class="num ${t.amount_cents > 0 ? 'good' : ''}">${money(t.amount_cents, true)}</td></tr>`).join('') || '<tr><td colspan="7" class="empty">No transactions this month.</td></tr>'}</table></div>`;
   const shift = (n) => { S.txMonth = new Date(S.txMonth.getFullYear(), S.txMonth.getMonth() + n, 1); moneyView(el); };
   $('#mPrev').onclick = () => shift(-1); $('#mNext').onclick = () => shift(1);
   $('#txAdd').onclick = () => txForm({});
   $('#fAcc').onchange = (e) => { f.account = e.target.value; moneyView(el); };
   $('#fCat').onchange = (e) => { f.category = e.target.value; moneyView(el); };
   $('#fQ').onchange = (e) => { f.q = e.target.value; moneyView(el); };
-  el.querySelectorAll('[data-tx]').forEach((r) => (r.onclick = () => txForm(txs.find((t) => t.id === Number(r.dataset.tx)))));
+  el.querySelectorAll('[data-tx]').forEach((r) => (r.onclick = (e) => { if (e.target.closest('[data-sel]')) return; txForm(txs.find((t) => t.id === Number(r.dataset.tx))); }));
+  if (typeof bulkBar === 'function') bulkBar(el, () => moneyView(el));
 }
 function txForm(t) {
   const isNew = !t.id; const type = t.amount_cents > 0 ? 'income' : 'expense';
@@ -507,16 +509,19 @@ function txForm(t) {
     <div><label>Account</label><select name="account_id">${opts(S.accounts.filter((a) => !a.archived || a.id === t.account_id).map((a) => [a.id, a.name]), t.account_id ?? (S.accounts[0] || {}).id, '-')}</select></div>
     <div class="full"><label>Notes</label><input name="notes" value="${esc(t.notes)}"></div>
     <div class="full"><label class="inline"><input type="checkbox" name="private" ${t.private ? 'checked' : ''}> Private (only me)</label>
-    <label class="inline"><input type="checkbox" name="transfer" ${t.transfer ? 'checked' : ''}> Transfer between my own accounts (not income or spending)</label></div></div>
+    <label class="inline"><input type="checkbox" name="transfer" ${t.transfer ? 'checked' : ''}> Transfer between my own accounts (not income or spending)</label>
+    <label class="inline"><input type="checkbox" name="business" ${t.business ? 'checked' : ''}> Business</label></div></div>
+    <div id="txExtra"></div>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="txDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#txForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
       try {
         let c = Math.abs(toCents(d.amount)); if (d.type === 'expense') c = -c;
-        await api(isNew ? 'POST' : 'PUT', '/api/transactions' + (isNew ? '' : '/' + t.id), { date: d.date, amount_cents: c, payee: d.payee, category_id: idOrNull(d.category_id), account_id: idOrNull(d.account_id), notes: d.notes, private: d.private, transfer: d.transfer });
+        await api(isNew ? 'POST' : 'PUT', '/api/transactions' + (isNew ? '' : '/' + t.id), { date: d.date, amount_cents: c, payee: d.payee, category_id: idOrNull(d.category_id), account_id: idOrNull(d.account_id), notes: d.notes, private: d.private, transfer: d.transfer, business: d.business });
         closeModal(); toast('Saved'); S.accounts = await api('GET', '/api/accounts'); render();
       } catch (err) { fail(err); }
     };
+    if (!isNew && typeof txFormExtras === 'function') txFormExtras(t, $('#txExtra', sh));
     const del = $('#txDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete this transaction?')) return; try { await api('DELETE', '/api/transactions/' + t.id); closeModal(); render(); } catch (e) { fail(e); } };
   });
@@ -554,10 +559,11 @@ function catForm(c) {
   openModal(`<form id="catForm"><h2>${isNew ? 'New category' : 'Edit category'}</h2><label>Name</label><input name="name" value="${esc(c.name)}" required>
     <label>Kind</label><select name="kind">${opts([['expense', 'Spending'], ['income', 'Income']], c.kind)}</select>
     <label>Monthly budget</label><input name="budget" inputmode="decimal" value="${esc(centsInput(c.budget_cents))}">
+    <label>Tax line (business categories)</label><select name="tax_line">${opts((typeof TAX_LINES !== 'undefined' ? TAX_LINES : []).map((x) => [x, x]), c.tax_line, '(none)')}</select>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="catDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#catForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
-      try { await api(isNew ? 'POST' : 'PUT', '/api/categories' + (isNew ? '' : '/' + c.id), { name: d.name, kind: d.kind, budget_cents: toCents(d.budget), color: c.color || '' }); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); }
+      try { await api(isNew ? 'POST' : 'PUT', '/api/categories' + (isNew ? '' : '/' + c.id), { name: d.name, kind: d.kind, budget_cents: toCents(d.budget), color: c.color || '', tax_line: d.tax_line || '' }); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); }
     };
     const del = $('#catDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete category "' + c.name + '"? Its transactions keep no category.')) return; try { await api('DELETE', '/api/categories/' + c.id); S.cats = await api('GET', '/api/categories'); closeModal(); render(); } catch (e) { fail(e); } };
@@ -584,11 +590,11 @@ function accForm(a) {
     <div><label>Opening balance</label><input name="opening" inputmode="decimal" value="${a.opening_cents ? esc((a.opening_cents / 100).toFixed(2)) : ''}" placeholder="0.00"></div>
     <div class="full"><label>Warn me when the forecast drops below (empty = no warning)</label><input name="low" inputmode="decimal" value="${a.low_balance_cents != null ? esc((a.low_balance_cents / 100).toFixed(2)) : ''}" placeholder="e.g. 200.00"></div>
     <div class="full"><label>Notes</label><input name="notes" value="${esc(a.notes)}" placeholder="No full account numbers here, please"></div>
-    <div class="full"><label class="inline"><input type="checkbox" name="private" ${a.private ? 'checked' : ''}> Private (only me)</label><label class="inline"><input type="checkbox" name="archived" ${a.archived ? 'checked' : ''}> Archived</label></div></div>
+    <div class="full"><label class="inline"><input type="checkbox" name="private" ${a.private ? 'checked' : ''}> Private (only me)</label><label class="inline"><input type="checkbox" name="archived" ${a.archived ? 'checked' : ''}> Archived</label><label class="inline"><input type="checkbox" name="business" ${a.business ? 'checked' : ''}> Business account (imports marked business)</label></div></div>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="accDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#accForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
-      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived, low_balance_cents: String(d.low).trim() === '' ? null : toCents(d.low) }); closeModal(); render(); } catch (e) { fail(e); }
+      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived, low_balance_cents: String(d.low).trim() === '' ? null : toCents(d.low), business: d.business }); closeModal(); render(); } catch (e) { fail(e); }
     };
     const del = $('#accDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete account "' + a.name + '"? Its transactions stay, with no account.')) return; try { await api('DELETE', '/api/accounts/' + a.id); closeModal(); render(); } catch (e) { fail(e); } };

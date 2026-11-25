@@ -19,7 +19,9 @@ func (sv *Server) routesRound1() {
 	fin := func(p string, h handler) { m.HandleFunc(p, sv.auth(h, "finance")) }
 	adm := func(p string, h handler) { m.HandleFunc(p, sv.auth(h, "admin")) }
 
-	fin("GET /api/incomes", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListIncomes(u.ID) })
+	fin("GET /api/incomes", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListIncomes(u.ID)
+	})
 	saveIncome := func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		var in core.Income
 		if err := readJSON(r, &in); err != nil {
@@ -37,7 +39,9 @@ func (sv *Server) routesRound1() {
 		return ok(), sv.Store.DeleteIncome(u.ID, pathID(r))
 	})
 
-	fin("GET /api/subscriptions", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.Subscriptions(u.ID) })
+	fin("GET /api/subscriptions", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.Subscriptions(u.ID)
+	})
 	fin("POST /api/subscriptions/state", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		var in struct {
 			Key    string `json:"key"`

@@ -23,6 +23,7 @@ type Account struct {
 	Archived     bool   `json:"archived"`
 	Notes        string `json:"notes"`
 	LowBalance   *int64 `json:"low_balance_cents"` // warn when the forecast drops below this (nil = off)
+	Business     bool   `json:"business"`          // imports into this account are marked business
 }
 
 // Category groups transactions; expense categories can carry a monthly budget.
@@ -32,6 +33,7 @@ type Category struct {
 	Kind        string `json:"kind"`
 	BudgetCents int64  `json:"budget_cents"`
 	Color       string `json:"color"`
+	TaxLine     string `json:"tax_line"` // Schedule C line, for the business tax report
 }
 
 // Transaction is money in (positive) or out (negative).
@@ -49,6 +51,9 @@ type Transaction struct {
 	ExternalID  string `json:"external_id"` // bank or PayPal transaction id (dedupe key)
 	Source      string `json:"source"`      // manual, import, email, autopay
 	Transfer    bool   `json:"transfer"`    // money moved between own accounts: left out of income, spending and budgets
+	Business    bool   `json:"business"`    // business (not household) money
+	Split       bool   `json:"split"`       // the parts carry the categories; this row only holds the total
+	Receipts    int    `json:"receipts"`    // attached receipt count
 }
 
 // Bill is a recurring (or one-time) payment with a due date.
@@ -106,7 +111,7 @@ func idPtr(n sql.NullInt64) *int64 {
 
 // ListAccounts returns visible accounts with their current balance.
 func (s *Store) ListAccounts(uid int64) ([]Account, error) {
-	rows, err := s.DB.Query(`SELECT a.id,a.name,a.type,a.opening_cents,a.owner_id,a.private,a.archived,a.notes,
+	rows, err := s.DB.Query(`SELECT a.id,a.name,a.type,a.opening_cents,a.owner_id,a.private,a.archived,a.notes,a.business,
 		a.opening_cents + COALESCE((SELECT SUM(amount_cents) FROM transactions t WHERE t.account_id=a.id),0), a.low_balance_cents
 		FROM accounts a WHERE (a.private=0 OR a.owner_id=?) ORDER BY a.archived, a.name`, uid)
 	if err != nil {
@@ -118,10 +123,11 @@ func (s *Store) ListAccounts(uid int64) ([]Account, error) {
 		var a Account
 		var p, ar int
 		var low sql.NullInt64
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.OpeningCents, &a.OwnerID, &p, &ar, &a.Notes, &a.BalanceCents, &low); err != nil {
+		var bz int
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.OpeningCents, &a.OwnerID, &p, &ar, &a.Notes, &bz, &a.BalanceCents, &low); err != nil {
 			return nil, err
 		}
-		a.Private, a.Archived, a.LowBalance = p == 1, ar == 1, idPtr(low)
+		a.Private, a.Archived, a.LowBalance, a.Business = p == 1, ar == 1, idPtr(low), bz == 1
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -134,15 +140,15 @@ func (s *Store) SaveAccount(uid int64, a *Account) error {
 		return errors.New("name is required")
 	}
 	if a.ID == 0 {
-		res, err := s.DB.Exec(`INSERT INTO accounts(name,type,opening_cents,owner_id,private,archived,notes,low_balance_cents) VALUES(?,?,?,?,?,?,?,?)`,
-			a.Name, a.Type, a.OpeningCents, uid, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance))
+		res, err := s.DB.Exec(`INSERT INTO accounts(name,type,opening_cents,owner_id,private,archived,notes,low_balance_cents,business) VALUES(?,?,?,?,?,?,?,?,?)`,
+			a.Name, a.Type, a.OpeningCents, uid, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), b2i(a.Business))
 		if err == nil {
 			a.ID, _ = res.LastInsertId()
 		}
 		return err
 	}
-	res, err := s.DB.Exec(`UPDATE accounts SET name=?,type=?,opening_cents=?,private=?,archived=?,notes=?,low_balance_cents=? WHERE id=? AND `+visible,
-		a.Name, a.Type, a.OpeningCents, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), a.ID, uid)
+	res, err := s.DB.Exec(`UPDATE accounts SET name=?,type=?,opening_cents=?,private=?,archived=?,notes=?,low_balance_cents=?,business=? WHERE id=? AND `+visible,
+		a.Name, a.Type, a.OpeningCents, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), b2i(a.Business), a.ID, uid)
 	return mustChange(res, err)
 }
 
@@ -165,7 +171,7 @@ func mustChange(res sql.Result, err error) error {
 
 // ListCategories returns every category.
 func (s *Store) ListCategories() ([]Category, error) {
-	rows, err := s.DB.Query(`SELECT id,name,kind,budget_cents,color FROM categories ORDER BY kind DESC, name`)
+	rows, err := s.DB.Query(`SELECT id,name,kind,budget_cents,color,tax_line FROM categories ORDER BY kind DESC, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +179,7 @@ func (s *Store) ListCategories() ([]Category, error) {
 	out := []Category{}
 	for rows.Next() {
 		var c Category
-		rows.Scan(&c.ID, &c.Name, &c.Kind, &c.BudgetCents, &c.Color)
+		rows.Scan(&c.ID, &c.Name, &c.Kind, &c.BudgetCents, &c.Color, &c.TaxLine)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -189,7 +195,7 @@ func (s *Store) SaveCategory(c *Category) error {
 		c.Kind = "expense"
 	}
 	if c.ID == 0 {
-		res, err := s.DB.Exec(`INSERT INTO categories(name,kind,budget_cents,color) VALUES(?,?,?,?)`, c.Name, c.Kind, c.BudgetCents, c.Color)
+		res, err := s.DB.Exec(`INSERT INTO categories(name,kind,budget_cents,color,tax_line) VALUES(?,?,?,?,?)`, c.Name, c.Kind, c.BudgetCents, c.Color, c.TaxLine)
 		if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 			return errors.New("that category exists")
 		}
@@ -198,7 +204,7 @@ func (s *Store) SaveCategory(c *Category) error {
 		}
 		return err
 	}
-	return mustChange(s.DB.Exec(`UPDATE categories SET name=?,kind=?,budget_cents=?,color=? WHERE id=?`, c.Name, c.Kind, c.BudgetCents, c.Color, c.ID))
+	return mustChange(s.DB.Exec(`UPDATE categories SET name=?,kind=?,budget_cents=?,color=?,tax_line=? WHERE id=?`, c.Name, c.Kind, c.BudgetCents, c.Color, c.TaxLine, c.ID))
 }
 
 // DeleteCategory removes a category; transactions keep no category.
@@ -219,7 +225,8 @@ type TxFilter struct {
 
 // ListTransactions returns visible transactions, newest first.
 func (s *Store) ListTransactions(uid int64, f TxFilter) ([]Transaction, error) {
-	q := `SELECT id,date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,external_id,source,transfer FROM transactions WHERE (private=0 OR user_id=?)`
+	q := `SELECT id,date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,external_id,source,transfer,business,split,
+		(SELECT COUNT(*) FROM attachments a WHERE a.transaction_id=transactions.id) FROM transactions WHERE parent_id IS NULL AND (private=0 OR user_id=?)`
 	args := []any{uid}
 	if f.From != "" {
 		q += ` AND date>=?`
@@ -256,11 +263,12 @@ func (s *Store) ListTransactions(uid int64, f TxFilter) ([]Transaction, error) {
 	for rows.Next() {
 		var t Transaction
 		var acc, cat, bill sql.NullInt64
-		var p, tr int
-		if err := rows.Scan(&t.ID, &t.Date, &t.AmountCents, &acc, &cat, &t.Payee, &t.Notes, &t.UserID, &p, &bill, &t.ExternalID, &t.Source, &tr); err != nil {
+		var p, tr, bz, sp int
+		if err := rows.Scan(&t.ID, &t.Date, &t.AmountCents, &acc, &cat, &t.Payee, &t.Notes, &t.UserID, &p, &bill, &t.ExternalID, &t.Source, &tr, &bz, &sp, &t.Receipts); err != nil {
 			return nil, err
 		}
 		t.AccountID, t.CategoryID, t.BillID, t.Private, t.Transfer = idPtr(acc), idPtr(cat), idPtr(bill), p == 1, tr == 1
+		t.Business, t.Split = bz == 1, sp == 1
 		out = append(out, t)
 	}
 	return out, rows.Err()
@@ -278,16 +286,27 @@ func (s *Store) SaveTransaction(uid int64, t *Transaction) error {
 		if t.Source == "" {
 			t.Source = "manual"
 		}
-		res, err := s.DB.Exec(`INSERT INTO transactions(date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,created,external_id,source,transfer) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, uid, b2i(t.Private), nullID(t.BillID), s.nowStr(), t.ExternalID, t.Source, b2i(t.Transfer))
+		res, err := s.DB.Exec(`INSERT INTO transactions(date,amount_cents,account_id,category_id,payee,notes,user_id,private,bill_id,created,external_id,source,transfer,business) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, uid, b2i(t.Private), nullID(t.BillID), s.nowStr(), t.ExternalID, t.Source, b2i(t.Transfer), b2i(t.Business))
 		if err == nil {
 			t.ID, _ = res.LastInsertId()
 			t.UserID = uid
 		}
 		return err
 	}
-	return mustChange(s.DB.Exec(`UPDATE transactions SET date=?,amount_cents=?,account_id=?,category_id=?,payee=?,notes=?,private=?,transfer=? WHERE id=? AND (private=0 OR user_id=?)`,
-		t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, b2i(t.Private), b2i(t.Transfer), t.ID, uid))
+	if err := mustChange(s.DB.Exec(`UPDATE transactions SET date=?,amount_cents=?,account_id=?,category_id=?,payee=?,notes=?,private=?,transfer=?,business=? WHERE id=? AND parent_id IS NULL AND (private=0 OR user_id=?)`,
+		t.Date, t.AmountCents, nullID(t.AccountID), nullID(t.CategoryID), strings.TrimSpace(t.Payee), t.Notes, b2i(t.Private), b2i(t.Transfer), b2i(t.Business), t.ID, uid)); err != nil {
+		return err
+	}
+	// a changed total no longer matches its parts: drop the split
+	var sum sql.NullInt64
+	s.DB.QueryRow(`SELECT SUM(amount_cents) FROM transactions WHERE parent_id=?`, t.ID).Scan(&sum)
+	if sum.Valid && sum.Int64 != t.AmountCents {
+		s.DB.Exec(`DELETE FROM transactions WHERE parent_id=?`, t.ID)
+		s.DB.Exec(`UPDATE transactions SET split=0 WHERE id=?`, t.ID)
+	}
+	s.DB.Exec(`UPDATE transactions SET date=?, private=?, transfer=? WHERE parent_id=?`, t.Date, b2i(t.Private), b2i(t.Transfer), t.ID)
+	return nil
 }
 
 // DeleteTransaction removes a transaction (and un-pays a bill it paid).
@@ -530,7 +549,7 @@ func (s *Store) Summary(uid int64, month string) (MonthSummary, error) {
 		return ms, err
 	}
 	spent := map[int64]int64{}
-	rows, err := s.DB.Query(`SELECT category_id, SUM(amount_cents) FROM transactions WHERE date>=? AND date<=? AND transfer=0 AND (private=0 OR user_id=?) GROUP BY category_id`,
+	rows, err := s.DB.Query(`SELECT category_id, SUM(amount_cents) FROM transactions WHERE date>=? AND date<=? AND transfer=0 AND split=0 AND (private=0 OR user_id=?) GROUP BY category_id`,
 		start.Format(DateFmt), end.Format(DateFmt), uid)
 	if err != nil {
 		return ms, err
@@ -547,7 +566,7 @@ func (s *Store) Summary(uid int64, month string) (MonthSummary, error) {
 	}
 	rows.Close()
 	s.DB.QueryRow(`SELECT COALESCE(SUM(CASE WHEN amount_cents>0 THEN amount_cents END),0), COALESCE(SUM(CASE WHEN amount_cents<0 THEN -amount_cents END),0)
-		FROM transactions WHERE date>=? AND date<=? AND transfer=0 AND (private=0 OR user_id=?)`, start.Format(DateFmt), end.Format(DateFmt), uid).Scan(&ms.IncomeCents, &ms.ExpenseCents)
+		FROM transactions WHERE date>=? AND date<=? AND transfer=0 AND split=0 AND (private=0 OR user_id=?)`, start.Format(DateFmt), end.Format(DateFmt), uid).Scan(&ms.IncomeCents, &ms.ExpenseCents)
 	for _, c := range cats {
 		cs := CategorySpend{Category: c, SpentCents: spent[c.ID]}
 		if c.Kind == "expense" {

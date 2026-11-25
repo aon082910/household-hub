@@ -266,6 +266,43 @@ var migrations = []string{
 		expires TEXT NOT NULL,
 		used TEXT NOT NULL DEFAULT ''
 	);`,
+	// 5: business vs personal, tax lines, category rules, split transactions, attachments
+	`ALTER TABLE transactions ADD COLUMN business INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE transactions ADD COLUMN parent_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE;
+	ALTER TABLE transactions ADD COLUMN split INTEGER NOT NULL DEFAULT 0;
+	CREATE INDEX tx_parent ON transactions(parent_id);
+	ALTER TABLE accounts ADD COLUMN business INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE categories ADD COLUMN tax_line TEXT NOT NULL DEFAULT '';
+	CREATE TABLE category_rules (
+		id INTEGER PRIMARY KEY,
+		contains TEXT NOT NULL,
+		category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+		business INTEGER NOT NULL DEFAULT -1,
+		transfer INTEGER NOT NULL DEFAULT -1,
+		priority INTEGER NOT NULL DEFAULT 100
+	);
+	CREATE TABLE attachments (
+		id INTEGER PRIMARY KEY,
+		kind TEXT NOT NULL,
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		transaction_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE,
+		document_id INTEGER,
+		name TEXT NOT NULL,
+		mime TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		path TEXT NOT NULL,
+		created TEXT NOT NULL
+	);
+	INSERT OR IGNORE INTO categories(name,kind,tax_line) VALUES
+		('Business: Sales','income','1 Gross receipts or sales'),
+		('Business: Advertising','expense','8 Advertising'),
+		('Business: Fees & commissions','expense','10 Commissions and fees'),
+		('Business: Contract labor','expense','11 Contract labor'),
+		('Business: Office & software','expense','18 Office expense'),
+		('Business: Supplies','expense','22 Supplies'),
+		('Business: Shipping & postage','expense','27a Other expenses'),
+		('Business: Bank & payment fees','expense','27a Other expenses'),
+		('Business: Cost of goods','expense','Part III Cost of goods sold');`,
 }
 
 // Open opens (and creates or migrates) the database at path.

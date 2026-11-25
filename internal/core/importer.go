@@ -372,6 +372,12 @@ func (s *Store) AddImported(uid int64, t *Transaction) (string, error) {
 		}
 		return "matched", nil
 	}
+	var accBiz int
+	s.DB.QueryRow(`SELECT business FROM accounts WHERE id=?`, *t.AccountID).Scan(&accBiz)
+	if accBiz == 1 {
+		t.Business = true // e.g. the business bank account
+	}
+	s.applyRules(t)
 	if t.CategoryID == nil && t.Payee != "" && !t.Transfer { // learn the category from the last entry with this payee
 		var c sql.NullInt64
 		s.DB.QueryRow(`SELECT category_id FROM transactions WHERE lower(payee)=lower(?) AND category_id IS NOT NULL ORDER BY date DESC LIMIT 1`, t.Payee).Scan(&c)
