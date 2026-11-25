@@ -326,6 +326,69 @@ var migrations = []string{
 	);
 	ALTER TABLE accounts ADD COLUMN apr_bps INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE accounts ADD COLUMN min_payment_cents INTEGER NOT NULL DEFAULT 0;`,
+	// 7: shared lists, chores, allowance, meal plan
+	`CREATE TABLE lists (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		kind TEXT NOT NULL DEFAULT 'shopping',
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		created TEXT NOT NULL
+	);
+	CREATE TABLE list_items (
+		id INTEGER PRIMARY KEY,
+		list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+		text TEXT NOT NULL,
+		qty TEXT NOT NULL DEFAULT '',
+		done INTEGER NOT NULL DEFAULT 0,
+		done_by INTEGER,
+		done_at TEXT NOT NULL DEFAULT '',
+		assigned_to INTEGER,
+		due_date TEXT NOT NULL DEFAULT '',
+		position INTEGER NOT NULL DEFAULT 0,
+		created_by INTEGER NOT NULL,
+		created TEXT NOT NULL
+	);
+	CREATE TABLE chores (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		freq TEXT NOT NULL DEFAULT 'weekly',
+		interval INTEGER NOT NULL DEFAULT 1,
+		start_date TEXT NOT NULL,
+		reward_cents INTEGER NOT NULL DEFAULT 0,
+		active INTEGER NOT NULL DEFAULT 1,
+		created_by INTEGER NOT NULL
+	);
+	CREATE TABLE chore_done (
+		id INTEGER PRIMARY KEY,
+		chore_id INTEGER NOT NULL REFERENCES chores(id) ON DELETE CASCADE,
+		occ TEXT NOT NULL,
+		user_id INTEGER NOT NULL,
+		done_at TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'waiting',
+		decided_by INTEGER,
+		UNIQUE(chore_id, occ)
+	);
+	CREATE TABLE allowance (
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		date TEXT NOT NULL,
+		cents INTEGER NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		chore_done_id INTEGER,
+		by_user INTEGER NOT NULL
+	);
+	CREATE TABLE meals (
+		id INTEGER PRIMARY KEY,
+		date TEXT NOT NULL,
+		slot TEXT NOT NULL DEFAULT 'dinner',
+		title TEXT NOT NULL,
+		ingredients TEXT NOT NULL DEFAULT '',
+		notes TEXT NOT NULL DEFAULT '',
+		created_by INTEGER NOT NULL
+	);
+	CREATE INDEX meals_date ON meals(date);`,
 }
 
 // Open opens (and creates or migrates) the database at path.

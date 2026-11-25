@@ -11,7 +11,9 @@ import (
 func (sv *Server) routesRound3() {
 	fin := func(p string, h handler) { sv.mux.HandleFunc(p, sv.auth(h, "finance")) }
 
-	fin("GET /api/goals", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) { return sv.Store.ListGoals(u.ID) })
+	fin("GET /api/goals", func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
+		return sv.Store.ListGoals(u.ID)
+	})
 	saveGoal := func(w http.ResponseWriter, r *http.Request, u *core.User) (any, error) {
 		var g core.Goal
 		if err := readJSON(r, &g); err != nil {

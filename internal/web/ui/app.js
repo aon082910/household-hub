@@ -246,6 +246,7 @@ async function dashboard(el) {
   $('#dashAdd').onclick = () => eventForm({ start: today });
   el.querySelectorAll('[data-occ]').forEach((li) => (li.onclick = async () => eventForm(await api('GET', '/api/events/' + li.dataset.occ))));
   el.querySelectorAll('[data-pay]').forEach((b) => (b.onclick = () => { const [id, occ] = b.dataset.pay.split('|'); payForm(Number(id), occ); }));
+  if (typeof dashboardExtras === 'function') dashboardExtras(el);
 }
 
 // ---------- calendar ----------
