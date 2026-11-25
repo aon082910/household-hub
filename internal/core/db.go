@@ -303,6 +303,29 @@ var migrations = []string{
 		('Business: Shipping & postage','expense','27a Other expenses'),
 		('Business: Bank & payment fees','expense','27a Other expenses'),
 		('Business: Cost of goods','expense','Part III Cost of goods sold');`,
+	// 6: savings goals, debt details
+	`CREATE TABLE goals (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		target_cents INTEGER NOT NULL,
+		target_date TEXT NOT NULL DEFAULT '',
+		account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+		saved_cents INTEGER NOT NULL DEFAULT 0,
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		color TEXT NOT NULL DEFAULT '',
+		done INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE goal_moves (
+		id INTEGER PRIMARY KEY,
+		goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+		date TEXT NOT NULL,
+		cents INTEGER NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		user_id INTEGER NOT NULL
+	);
+	ALTER TABLE accounts ADD COLUMN apr_bps INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE accounts ADD COLUMN min_payment_cents INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Open opens (and creates or migrates) the database at path.

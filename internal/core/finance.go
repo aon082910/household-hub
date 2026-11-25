@@ -24,6 +24,8 @@ type Account struct {
 	Notes        string `json:"notes"`
 	LowBalance   *int64 `json:"low_balance_cents"` // warn when the forecast drops below this (nil = off)
 	Business     bool   `json:"business"`          // imports into this account are marked business
+	APRBps       int64  `json:"apr_bps"`           // yearly interest, 1999 = 19.99% (cards and loans)
+	MinPayment   int64  `json:"min_payment_cents"` // monthly minimum payment (cards and loans)
 }
 
 // Category groups transactions; expense categories can carry a monthly budget.
@@ -111,7 +113,7 @@ func idPtr(n sql.NullInt64) *int64 {
 
 // ListAccounts returns visible accounts with their current balance.
 func (s *Store) ListAccounts(uid int64) ([]Account, error) {
-	rows, err := s.DB.Query(`SELECT a.id,a.name,a.type,a.opening_cents,a.owner_id,a.private,a.archived,a.notes,a.business,
+	rows, err := s.DB.Query(`SELECT a.id,a.name,a.type,a.opening_cents,a.owner_id,a.private,a.archived,a.notes,a.business,a.apr_bps,a.min_payment_cents,
 		a.opening_cents + COALESCE((SELECT SUM(amount_cents) FROM transactions t WHERE t.account_id=a.id),0), a.low_balance_cents
 		FROM accounts a WHERE (a.private=0 OR a.owner_id=?) ORDER BY a.archived, a.name`, uid)
 	if err != nil {
@@ -124,7 +126,7 @@ func (s *Store) ListAccounts(uid int64) ([]Account, error) {
 		var p, ar int
 		var low sql.NullInt64
 		var bz int
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.OpeningCents, &a.OwnerID, &p, &ar, &a.Notes, &bz, &a.BalanceCents, &low); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.OpeningCents, &a.OwnerID, &p, &ar, &a.Notes, &bz, &a.APRBps, &a.MinPayment, &a.BalanceCents, &low); err != nil {
 			return nil, err
 		}
 		a.Private, a.Archived, a.LowBalance, a.Business = p == 1, ar == 1, idPtr(low), bz == 1
@@ -140,15 +142,15 @@ func (s *Store) SaveAccount(uid int64, a *Account) error {
 		return errors.New("name is required")
 	}
 	if a.ID == 0 {
-		res, err := s.DB.Exec(`INSERT INTO accounts(name,type,opening_cents,owner_id,private,archived,notes,low_balance_cents,business) VALUES(?,?,?,?,?,?,?,?,?)`,
-			a.Name, a.Type, a.OpeningCents, uid, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), b2i(a.Business))
+		res, err := s.DB.Exec(`INSERT INTO accounts(name,type,opening_cents,owner_id,private,archived,notes,low_balance_cents,business,apr_bps,min_payment_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			a.Name, a.Type, a.OpeningCents, uid, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), b2i(a.Business), a.APRBps, a.MinPayment)
 		if err == nil {
 			a.ID, _ = res.LastInsertId()
 		}
 		return err
 	}
-	res, err := s.DB.Exec(`UPDATE accounts SET name=?,type=?,opening_cents=?,private=?,archived=?,notes=?,low_balance_cents=?,business=? WHERE id=? AND `+visible,
-		a.Name, a.Type, a.OpeningCents, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), b2i(a.Business), a.ID, uid)
+	res, err := s.DB.Exec(`UPDATE accounts SET name=?,type=?,opening_cents=?,private=?,archived=?,notes=?,low_balance_cents=?,business=?,apr_bps=?,min_payment_cents=? WHERE id=? AND `+visible,
+		a.Name, a.Type, a.OpeningCents, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), b2i(a.Business), a.APRBps, a.MinPayment, a.ID, uid)
 	return mustChange(res, err)
 }
 

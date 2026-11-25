@@ -588,13 +588,15 @@ function accForm(a) {
     <div class="full"><label>Name</label><input name="name" value="${esc(a.name)}" required placeholder="Joint checking"></div>
     <div><label>Type</label><select name="type">${opts(ACC_TYPES, a.type || 'checking')}</select></div>
     <div><label>Opening balance</label><input name="opening" inputmode="decimal" value="${a.opening_cents ? esc((a.opening_cents / 100).toFixed(2)) : ''}" placeholder="0.00"></div>
+    <div><label>Interest rate % (cards, loans)</label><input name="apr" inputmode="decimal" value="${a.apr_bps ? esc((a.apr_bps / 100).toFixed(2)) : ''}" placeholder="19.99"></div>
+    <div><label>Minimum payment / month</label><input name="minpay" inputmode="decimal" value="${esc(centsInput(a.min_payment_cents))}"></div>
     <div class="full"><label>Warn me when the forecast drops below (empty = no warning)</label><input name="low" inputmode="decimal" value="${a.low_balance_cents != null ? esc((a.low_balance_cents / 100).toFixed(2)) : ''}" placeholder="e.g. 200.00"></div>
     <div class="full"><label>Notes</label><input name="notes" value="${esc(a.notes)}" placeholder="No full account numbers here, please"></div>
     <div class="full"><label class="inline"><input type="checkbox" name="private" ${a.private ? 'checked' : ''}> Private (only me)</label><label class="inline"><input type="checkbox" name="archived" ${a.archived ? 'checked' : ''}> Archived</label><label class="inline"><input type="checkbox" name="business" ${a.business ? 'checked' : ''}> Business account (imports marked business)</label></div></div>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="accDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#accForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
-      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived, low_balance_cents: String(d.low).trim() === '' ? null : toCents(d.low), business: d.business }); closeModal(); render(); } catch (e) { fail(e); }
+      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived, low_balance_cents: String(d.low).trim() === '' ? null : toCents(d.low), business: d.business, apr_bps: Math.round((parseFloat(d.apr) || 0) * 100), min_payment_cents: Math.abs(toCents(d.minpay)) }); closeModal(); render(); } catch (e) { fail(e); }
     };
     const del = $('#accDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete account "' + a.name + '"? Its transactions stay, with no account.')) return; try { await api('DELETE', '/api/accounts/' + a.id); closeModal(); render(); } catch (e) { fail(e); } };
