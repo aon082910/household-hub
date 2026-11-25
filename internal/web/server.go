@@ -42,6 +42,7 @@ type Server struct {
 func New(s *core.Store, n *core.Notifier, version string) *Server {
 	sv := &Server{Store: s, Notifier: n, Version: version, Fetch: core.IMAPFetch, mux: http.NewServeMux(), fails: map[string][]time.Time{}}
 	sv.routes()
+	sv.routesRound1()
 	return sv
 }
 

@@ -104,7 +104,9 @@ func (s *Store) ScanWatchFolder(id int64, send Sender) (int, error) {
 	if err := s.DB.QueryRow(`SELECT id,label,path,account_id,enabled FROM watch_folders WHERE id=?`, id).Scan(&w.ID, &w.Label, &w.Path, &w.AccountID, &en); err != nil {
 		return 0, ErrNotFound
 	}
-	setErr := func(e string) { s.DB.Exec(`UPDATE watch_folders SET last_scan=?, last_error=? WHERE id=?`, s.nowStr(), trunc(e, 500), id) }
+	setErr := func(e string) {
+		s.DB.Exec(`UPDATE watch_folders SET last_scan=?, last_error=? WHERE id=?`, s.nowStr(), trunc(e, 500), id)
+	}
 	if _, err := checkWatchPath(w.Path); err != nil {
 		setErr(err.Error())
 		return 0, err

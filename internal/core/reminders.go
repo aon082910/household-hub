@@ -301,7 +301,11 @@ func (s *Store) RunReminders(now time.Time, send Sender) (int, error) {
 				}
 				for _, u := range billRecipients(b, byID, active) {
 					if s.claim("bill", b.ID, occ, stp.lead, u.ID) {
-						s.notify(send, u, m)
+						um := m
+						if base != "" && u.HasChannel("ntfy") && u.NtfyTopic != "" && u.CanFinance() {
+							um.Actions = []Action{{Label: "Mark paid", URL: base + "/act/" + s.NewActionToken(b.ID, occ, u.ID)}}
+						}
+						s.notify(send, u, um)
 						sent++
 					}
 				}
@@ -364,6 +368,7 @@ func (s *Store) RunEngine(ctx context.Context, send Sender) {
 				log.Printf("reminder engine panic: %v", r)
 			}
 		}()
+		s.DailyChecks(s.Now(), send)
 		if n, err := s.RunReminders(s.Now(), send); err != nil {
 			log.Printf("reminders: %v", err)
 		} else if n > 0 {

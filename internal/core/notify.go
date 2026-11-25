@@ -17,9 +17,16 @@ import (
 
 // Message is one reminder or alert.
 type Message struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-	Link  string `json:"link"`
+	Title   string   `json:"title"`
+	Body    string   `json:"body"`
+	Link    string   `json:"link"`
+	Actions []Action `json:"actions,omitempty"` // buttons on phone push (ntfy)
+}
+
+// Action is a one-tap button that POSTs to URL.
+type Action struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 // Channels a user can switch on. "inapp" (bell) and "device" (Windows toast / browser pop-up) need no setup.
@@ -97,6 +104,15 @@ func (n *Notifier) ntfy(cfg map[string]string, topic string, m Message) error {
 	req.Header.Set("Tags", "calendar")
 	if m.Link != "" {
 		req.Header.Set("Click", m.Link)
+	}
+	var acts []string
+	for _, a := range m.Actions {
+		if len(acts) < 3 && !strings.ContainsAny(a.Label+a.URL, ",;\r\n") {
+			acts = append(acts, "http, "+a.Label+", "+a.URL+", method=POST, clear=true")
+		}
+	}
+	if len(acts) > 0 {
+		req.Header.Set("Actions", strings.Join(acts, "; "))
 	}
 	if t := cfg["ntfy_token"]; t != "" {
 		req.Header.Set("Authorization", "Bearer "+t)

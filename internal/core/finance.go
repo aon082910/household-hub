@@ -22,6 +22,7 @@ type Account struct {
 	Private      bool   `json:"private"`
 	Archived     bool   `json:"archived"`
 	Notes        string `json:"notes"`
+	LowBalance   *int64 `json:"low_balance_cents"` // warn when the forecast drops below this (nil = off)
 }
 
 // Category groups transactions; expense categories can carry a monthly budget.
@@ -106,7 +107,7 @@ func idPtr(n sql.NullInt64) *int64 {
 // ListAccounts returns visible accounts with their current balance.
 func (s *Store) ListAccounts(uid int64) ([]Account, error) {
 	rows, err := s.DB.Query(`SELECT a.id,a.name,a.type,a.opening_cents,a.owner_id,a.private,a.archived,a.notes,
-		a.opening_cents + COALESCE((SELECT SUM(amount_cents) FROM transactions t WHERE t.account_id=a.id),0)
+		a.opening_cents + COALESCE((SELECT SUM(amount_cents) FROM transactions t WHERE t.account_id=a.id),0), a.low_balance_cents
 		FROM accounts a WHERE (a.private=0 OR a.owner_id=?) ORDER BY a.archived, a.name`, uid)
 	if err != nil {
 		return nil, err
@@ -116,10 +117,11 @@ func (s *Store) ListAccounts(uid int64) ([]Account, error) {
 	for rows.Next() {
 		var a Account
 		var p, ar int
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.OpeningCents, &a.OwnerID, &p, &ar, &a.Notes, &a.BalanceCents); err != nil {
+		var low sql.NullInt64
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.OpeningCents, &a.OwnerID, &p, &ar, &a.Notes, &a.BalanceCents, &low); err != nil {
 			return nil, err
 		}
-		a.Private, a.Archived = p == 1, ar == 1
+		a.Private, a.Archived, a.LowBalance = p == 1, ar == 1, idPtr(low)
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -132,15 +134,15 @@ func (s *Store) SaveAccount(uid int64, a *Account) error {
 		return errors.New("name is required")
 	}
 	if a.ID == 0 {
-		res, err := s.DB.Exec(`INSERT INTO accounts(name,type,opening_cents,owner_id,private,archived,notes) VALUES(?,?,?,?,?,?,?)`,
-			a.Name, a.Type, a.OpeningCents, uid, b2i(a.Private), b2i(a.Archived), a.Notes)
+		res, err := s.DB.Exec(`INSERT INTO accounts(name,type,opening_cents,owner_id,private,archived,notes,low_balance_cents) VALUES(?,?,?,?,?,?,?,?)`,
+			a.Name, a.Type, a.OpeningCents, uid, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance))
 		if err == nil {
 			a.ID, _ = res.LastInsertId()
 		}
 		return err
 	}
-	res, err := s.DB.Exec(`UPDATE accounts SET name=?,type=?,opening_cents=?,private=?,archived=?,notes=? WHERE id=? AND `+visible,
-		a.Name, a.Type, a.OpeningCents, b2i(a.Private), b2i(a.Archived), a.Notes, a.ID, uid)
+	res, err := s.DB.Exec(`UPDATE accounts SET name=?,type=?,opening_cents=?,private=?,archived=?,notes=?,low_balance_cents=? WHERE id=? AND `+visible,
+		a.Name, a.Type, a.OpeningCents, b2i(a.Private), b2i(a.Archived), a.Notes, lowArg(a.LowBalance), a.ID, uid)
 	return mustChange(res, err)
 }
 
@@ -559,4 +561,11 @@ func (s *Store) Summary(uid int64, month string) (MonthSummary, error) {
 	}
 	ms.BudgetLeft = ms.BudgetCents - ms.BudgetSpent
 	return ms, nil
+}
+
+func lowArg(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }

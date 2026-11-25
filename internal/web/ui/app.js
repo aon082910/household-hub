@@ -194,17 +194,22 @@ document.addEventListener('click', async (e) => {
 });
 
 // ---------- routing ----------
+// Later feature files add pages here: EXTRA_VIEWS[name] = fn, and money pages to FIN_VIEWS.
+const EXTRA_VIEWS = {};
+const FIN_VIEWS = ['bills', 'money', 'budget', 'accounts', 'import'];
+const SETTINGS_TABS = []; // [key, title, fn, adminOnly]
+function allViews() { return { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings, import: importView, ...EXTRA_VIEWS }; }
 function route() {
   if (!S.me) return;
   let [v, q] = (location.hash.slice(1) || 'dashboard').split('?');
-  const views = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings, import: importView };
-  if (!views[v] || (!canFin() && ['bills', 'money', 'budget', 'accounts', 'import'].includes(v))) v = 'dashboard';
+  const views = allViews();
+  if (!views[v] || (!canFin() && FIN_VIEWS.includes(v))) v = 'dashboard';
   S.view = v; S.query = new URLSearchParams(q || '');
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.view === v));
   loadRefs().catch(() => {}).then(render); // members, categories and accounts may have changed on another device
 }
 async function render() {
-  const fn = { dashboard, calendar, bills, money: moneyView, budget, accounts, alerts, settings, import: importView }[S.view];
+  const fn = allViews()[S.view];
   try { await fn($('#main')); } catch (e) { $('#main').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 window.addEventListener('hashchange', route);
@@ -577,12 +582,13 @@ function accForm(a) {
     <div class="full"><label>Name</label><input name="name" value="${esc(a.name)}" required placeholder="Joint checking"></div>
     <div><label>Type</label><select name="type">${opts(ACC_TYPES, a.type || 'checking')}</select></div>
     <div><label>Opening balance</label><input name="opening" inputmode="decimal" value="${a.opening_cents ? esc((a.opening_cents / 100).toFixed(2)) : ''}" placeholder="0.00"></div>
+    <div class="full"><label>Warn me when the forecast drops below (empty = no warning)</label><input name="low" inputmode="decimal" value="${a.low_balance_cents != null ? esc((a.low_balance_cents / 100).toFixed(2)) : ''}" placeholder="e.g. 200.00"></div>
     <div class="full"><label>Notes</label><input name="notes" value="${esc(a.notes)}" placeholder="No full account numbers here, please"></div>
     <div class="full"><label class="inline"><input type="checkbox" name="private" ${a.private ? 'checked' : ''}> Private (only me)</label><label class="inline"><input type="checkbox" name="archived" ${a.archived ? 'checked' : ''}> Archived</label></div></div>
     <div class="actions">${isNew ? '' : '<button type="button" class="danger left" id="accDel">Delete</button>'}<button type="button" data-action="close">Cancel</button><button class="primary">Save</button></div></form>`, (sh) => {
     $('#accForm', sh).onsubmit = async (ev) => {
       ev.preventDefault(); const d = formData(ev.target);
-      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived }); closeModal(); render(); } catch (e) { fail(e); }
+      try { await api(isNew ? 'POST' : 'PUT', '/api/accounts' + (isNew ? '' : '/' + a.id), { name: d.name, type: d.type, opening_cents: toCents(d.opening), notes: d.notes, private: d.private, archived: d.archived, low_balance_cents: String(d.low).trim() === '' ? null : toCents(d.low) }); closeModal(); render(); } catch (e) { fail(e); }
     };
     const del = $('#accDel', sh);
     if (del) del.onclick = async () => { if (!confirm('Delete account "' + a.name + '"? Its transactions stay, with no account.')) return; try { await api('DELETE', '/api/accounts/' + a.id); closeModal(); render(); } catch (e) { fail(e); } };
@@ -602,11 +608,14 @@ async function alerts(el) {
 // ---------- settings ----------
 async function settings(el) {
   const tab = S.settingsTab || 'me';
-  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['email', 'Auto import'], ['backup', 'Backup']] : []);
+  const extra = SETTINGS_TABS.filter((t) => !t[3] || isAdmin());
+  const tabs = [['me', 'My profile'], ['notify', 'My notifications']].concat(extra.map((t) => [t[0], t[1]])).concat(isAdmin() ? [['members', 'Members'], ['household', 'Household'], ['email', 'Auto import'], ['backup', 'Backup']] : []);
   el.innerHTML = `<h1>Settings</h1><div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${t}</button>`).join('')}</div><div id="setBody"></div>`;
   el.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { S.settingsTab = b.dataset.tab; settings(el); }));
   const body = $('#setBody');
-  await ({ me: setMe, notify: setNotify, members: setMembers, household: setHousehold, email: setEmail, backup: setBackup }[tab])(body);
+  const fns = { me: setMe, notify: setNotify, members: setMembers, household: setHousehold, email: setEmail, backup: typeof setBackupAuto === 'function' ? setBackupAuto : setBackup };
+  for (const t of extra) fns[t[0]] = t[2];
+  await (fns[tab] || setMe)(body);
 }
 async function setMe(el) {
   const me = await api('GET', '/api/me');

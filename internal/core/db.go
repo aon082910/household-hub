@@ -237,6 +237,35 @@ var migrations = []string{
 		result TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY(watch_id, sha256)
 	);`,
+	// 4: recurring income, low-balance alerts, subscription choices, one-tap action tokens
+	`CREATE TABLE incomes (
+		id INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		amount_cents INTEGER NOT NULL,
+		account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+		start_date TEXT NOT NULL,
+		freq TEXT NOT NULL DEFAULT 'monthly',
+		interval INTEGER NOT NULL DEFAULT 1,
+		until TEXT NOT NULL DEFAULT '',
+		owner_id INTEGER NOT NULL REFERENCES users(id),
+		private INTEGER NOT NULL DEFAULT 0,
+		active INTEGER NOT NULL DEFAULT 1
+	);
+	ALTER TABLE accounts ADD COLUMN low_balance_cents INTEGER;
+	CREATE TABLE subscription_state (
+		key TEXT PRIMARY KEY,
+		status TEXT NOT NULL,
+		bill_id INTEGER
+	);
+	CREATE TABLE action_tokens (
+		token_hash TEXT PRIMARY KEY,
+		kind TEXT NOT NULL,
+		bill_id INTEGER NOT NULL,
+		occ TEXT NOT NULL,
+		user_id INTEGER NOT NULL,
+		expires TEXT NOT NULL,
+		used TEXT NOT NULL DEFAULT ''
+	);`,
 }
 
 // Open opens (and creates or migrates) the database at path.
